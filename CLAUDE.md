@@ -36,3 +36,9 @@ A backend-only, production-grade "Ask My Doc" RAG assistant. Portfolio centrepie
 - Rule of three: allow duplication until the third repeat, then abstract.
 - When principles conflict, KISS/YAGNI win. If an abstraction isn't used
   by at least two callers now, don't add it.
+
+## Comments
+- Comment only to explain *why* for non-obvious logic. No narration.
+- Never mention slices, specs, CLAUDE.md, the plan, or the build process
+  in code or comments.
+- Don't restate what the code does. No "as per", no "skeleton only".

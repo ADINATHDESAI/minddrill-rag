@@ -28,6 +28,7 @@ No praise, no summary of what the code does. Prioritise:
 - **Tests:** claims of passing tests without evidence; missing test for the spec's
   failure cases.
 - **Abstraction:** flag premature abstraction and needless indirection
+- flag process-narrating or spec-referencing comments. 
 
 If you find nothing in a category, say nothing about it. End with the single
 highest-priority fix.
