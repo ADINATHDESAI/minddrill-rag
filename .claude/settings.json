@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/claude-code-settings.json",
+  "permissions": {
+    "deny":  ["Read(./.env)", "Read(./.env.*)", "Read(./**/secrets*)"],
+    "allow": [
+      "Bash(uv *)", "Bash(pytest *)", "Bash(ruff *)",
+      "Bash(alembic *)", "Bash(docker compose *)", "Bash(git *)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      { "matcher": "Edit|Write",
+        "hooks": [{ "type": "command", "command": "ruff format ." }] }
+    ]
+  }
+}
