@@ -1,0 +1,26 @@
+services:
+  db:
+    image: paradedb/paradedb:latest
+    environment:
+      POSTGRES_USER: minddrill
+      POSTGRES_PASSWORD: minddrill
+      POSTGRES_DB: minddrill
+    ports:
+      - "5432:5432"
+    volumes:
+      # PG18+ images (current ParadeDB) store data in a version subdir, so the
+      # mount goes at /var/lib/postgresql, not /var/lib/postgresql/data.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U minddrill -d minddrill"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:

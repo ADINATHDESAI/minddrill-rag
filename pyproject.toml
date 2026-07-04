@@ -23,3 +23,8 @@ dev-dependencies = [
     "pytest-asyncio>=1.4.0",
     "ruff>=0.15.20",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+testpaths = ["tests"]
