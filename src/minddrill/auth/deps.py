@@ -27,7 +27,9 @@ async def get_current_user(
 ) -> User:
     """Resolve the authenticated user from the request."""
     if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing bearer token")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="missing bearer token"
+        )
 
     try:
         payload = decode_access_token(credentials.credentials)
@@ -39,6 +41,8 @@ async def get_current_user(
 
     user = await session.scalar(select(User).where(User.id == user_id))
     if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unknown user")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="unknown user"
+        )
 
     return user

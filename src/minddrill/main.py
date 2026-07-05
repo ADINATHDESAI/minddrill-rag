@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse
 
 from minddrill.auth.deps import get_current_user
 from minddrill.auth.router import router as auth_router
+from minddrill.config import get_settings
+from minddrill.logging import RequestIDMiddleware, configure_logging
 from minddrill.models.user import User
 
 # Maps HTTPException.status_code -> the API spec's error `code` string.
@@ -24,10 +26,15 @@ _ERROR_CODES = {
 
 
 def create_app() -> FastAPI:
+    configure_logging(get_settings().log_level)
+
     app = FastAPI(title="MindDrill")
+    app.add_middleware(RequestIDMiddleware)
 
     @app.exception_handler(HTTPException)
-    async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    async def http_exception_handler(
+        request: Request, exc: HTTPException
+    ) -> JSONResponse:
         code = _ERROR_CODES.get(exc.status_code, "internal_error")
         return JSONResponse(
             status_code=exc.status_code,

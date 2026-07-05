@@ -18,13 +18,17 @@ async def client():
         yield c
 
 
-async def _register(client: httpx.AsyncClient, username: str, password: str) -> httpx.Response:
+async def _register(
+    client: httpx.AsyncClient, username: str, password: str
+) -> httpx.Response:
     return await client.post(
         "/api/v1/auth/register", json={"username": username, "password": password}
     )
 
 
-async def _login(client: httpx.AsyncClient, username: str, password: str) -> httpx.Response:
+async def _login(
+    client: httpx.AsyncClient, username: str, password: str
+) -> httpx.Response:
     return await client.post(
         "/api/v1/auth/login", json={"username": username, "password": password}
     )
@@ -45,7 +49,9 @@ async def test_register_creates_user(client: httpx.AsyncClient) -> None:
     assert uuid.UUID(body["user_id"])
 
 
-async def test_register_duplicate_username_returns_409(client: httpx.AsyncClient) -> None:
+async def test_register_duplicate_username_returns_409(
+    client: httpx.AsyncClient,
+) -> None:
     await _register(client, "bob", "hunter2")
     response = await _register(client, "bob", "different")
 
@@ -53,14 +59,18 @@ async def test_register_duplicate_username_returns_409(client: httpx.AsyncClient
     assert response.json()["error"]["code"] == "conflict"
 
 
-async def test_register_password_too_long_returns_400(client: httpx.AsyncClient) -> None:
+async def test_register_password_too_long_returns_400(
+    client: httpx.AsyncClient,
+) -> None:
     response = await _register(client, "longpass", "x" * 73)
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "bad_request"
 
 
-async def test_register_concurrent_duplicate_returns_409(client: httpx.AsyncClient) -> None:
+async def test_register_concurrent_duplicate_returns_409(
+    client: httpx.AsyncClient,
+) -> None:
     responses = await asyncio.gather(
         _register(client, "racer", "hunter2"),
         _register(client, "racer", "hunter2"),
@@ -95,7 +105,9 @@ async def test_login_unknown_username_returns_401(client: httpx.AsyncClient) -> 
     assert response.status_code == 401
 
 
-async def test_protected_route_without_token_returns_401(client: httpx.AsyncClient) -> None:
+async def test_protected_route_without_token_returns_401(
+    client: httpx.AsyncClient,
+) -> None:
     response = await client.get("/api/v1/_whoami")
 
     assert response.status_code == 401
@@ -117,7 +129,9 @@ async def test_protected_route_with_valid_token_returns_current_user(
     assert body["username"] == "erin"
 
 
-async def test_protected_route_with_expired_token_returns_401(client: httpx.AsyncClient) -> None:
+async def test_protected_route_with_expired_token_returns_401(
+    client: httpx.AsyncClient,
+) -> None:
     register_response = await _register(client, "frank", "hunter2")
     user_id = register_response.json()["user_id"]
     token = _make_token(sub=user_id, exp_delta=timedelta(seconds=-1))
@@ -129,7 +143,9 @@ async def test_protected_route_with_expired_token_returns_401(client: httpx.Asyn
     assert response.status_code == 401
 
 
-async def test_protected_route_with_tampered_token_returns_401(client: httpx.AsyncClient) -> None:
+async def test_protected_route_with_tampered_token_returns_401(
+    client: httpx.AsyncClient,
+) -> None:
     await _register(client, "grace", "hunter2")
     login_response = await _login(client, "grace", "hunter2")
     token = login_response.json()["access_token"]

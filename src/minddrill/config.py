@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     jwt_secret: str
     gemini_api_key: str = ""
     embed_dim: int = 768
+    log_level: str = "INFO"
 
 
 @lru_cache

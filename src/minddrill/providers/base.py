@@ -23,8 +23,6 @@ class LLMProvider(Protocol):
         """Yield response tokens as they arrive. The primitive."""
         ...
 
-    async def generate(
-        self, messages: Sequence[dict[str, Any]], **kwargs: Any
-    ) -> str:
+    async def generate(self, messages: Sequence[dict[str, Any]], **kwargs: Any) -> str:
         """Return the full response as a string by consuming `stream`."""
         ...

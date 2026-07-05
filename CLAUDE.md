@@ -42,3 +42,9 @@ A backend-only, production-grade "Ask My Doc" RAG assistant. Portfolio centrepie
 - Never mention slices, specs, CLAUDE.md, the plan, or the build process
   in code or comments.
 - Don't restate what the code does. No "as per", no "skeleton only".
+
+## Logging
+- Structured JSON logs. Every request carries a request_id (correlation id).
+- Log at seams (ingest, retrieve, infer, errors). Never log secrets, JWTs,
+  or full document/chunk text — ids only.
+
