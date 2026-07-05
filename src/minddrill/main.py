@@ -11,6 +11,7 @@ from minddrill.auth.router import router as auth_router
 from minddrill.config import get_settings
 from minddrill.logging import RequestIDMiddleware, configure_logging
 from minddrill.models.user import User
+from minddrill.rag.router import router as rag_router
 
 # Maps HTTPException.status_code -> the API spec's error `code` string.
 _ERROR_CODES = {
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
         return {"user_id": str(current_user.id), "username": current_user.username}
 
     app.include_router(auth_router, prefix="/api/v1")
+    app.include_router(rag_router, prefix="/api/v1")
 
     return app
 

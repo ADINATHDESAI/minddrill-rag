@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from minddrill.config import get_settings
 from minddrill.db.session import Base
+from minddrill.models import chunk as _chunk  # noqa: F401  registers Chunk on Base.metadata
+from minddrill.models import document as _document  # noqa: F401  registers Document
 from minddrill.models import user as _user  # noqa: F401  registers User on Base.metadata
 
 config = context.config

@@ -222,3 +222,6 @@ __marimo__/
 .venv
 __pycache__/
 *.pyc
+
+# Local-Files
+Local-Files/

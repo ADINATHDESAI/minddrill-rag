@@ -51,6 +51,9 @@ Why: you can collapse a stream to a string cheaply, but can't split a string bac
 **Gemini free tier (primary) → OpenRouter (fallback). Failover before the SSE stream opens.**
 Why: streaming works on free tiers; the real limit is rate (429), which arrives before any token — so we fail over cleanly, client never sees a broken stream.
 
+**Gemini models: `gemini-embedding-001` at 768 dims (output_dimensionality) for embeddings, `gemini-2.5-flash` for chat.**
+Why: the originally specced `text-embedding-004` is no longer served on current keys, and `gemini-2.0-flash` has zero free-tier generate quota. Cost: pinning `gemini-embedding-001` to 768 keeps the fixed `vector(768)` schema unchanged.
+
 **LangChain chat models as per-provider adapters inside our own interface.**
 Why: free multi-provider + typed content blocks; our failover/stream orchestration stays ours.
 
