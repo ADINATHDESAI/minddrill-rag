@@ -21,8 +21,10 @@ async def test_user_b_query_never_returns_user_a_chunks(
         json={"source_type": "pdf", "source_uri": str(path)},
         headers=a_headers,
     )
-    assert ingest.status_code == 200, ingest.text
-    assert ingest.json()["chunk_count"] > 0
+    assert ingest.status_code == 202, ingest.text
+    job_id = ingest.json()["job_id"]
+    status = await client.get(f"/api/v1/ingest/{job_id}", headers=a_headers)
+    assert status.json()["status"] == "done", status.text
 
     # User B asks the exact question A's document answers.
     _, b_headers = await register_user(client, "bob_iso")

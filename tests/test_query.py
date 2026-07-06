@@ -20,7 +20,7 @@ async def _ingest(client: httpx.AsyncClient, headers: dict, tmp_path) -> None:
         json={"source_type": "pdf", "source_uri": str(path)},
         headers=headers,
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 202, resp.text
 
 
 async def test_query_returns_answer_and_sources(

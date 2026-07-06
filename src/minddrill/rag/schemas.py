@@ -16,6 +16,18 @@ class IngestResponse(BaseModel):
     chunk_count: int
 
 
+class IngestJobResponse(BaseModel):
+    job_id: UUID
+    status: str
+
+
+class IngestJobStatus(BaseModel):
+    job_id: UUID
+    status: str
+    document_id: UUID | None = None
+    error: str | None = None
+
+
 class QueryRequest(BaseModel):
     question: str = Field(min_length=1)
 

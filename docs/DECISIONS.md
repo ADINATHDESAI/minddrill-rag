@@ -32,6 +32,12 @@ Why: ingestion is long, failure-prone, restart-sensitive — it needs durable jo
 **Query path is synchronous and hand-written. Never queued.**
 Why: queries are short and interactive; queuing adds latency for zero benefit. This is the portfolio centrepiece — kept explicit, not hidden behind a framework.
 
+**Job status is committed separately from the document, not in one transaction.** A crash between the two commits self-heals on `task_acks_late` redelivery via per-user idempotency (next attempt finds the existing doc and marks the job `done`).
+Why: a literal shared transaction would mean refactoring the reusable `ingest_pdf` commit boundary for a gap the recovery path already closes. Cost: a brief window where a job reads `processing` while its document already exists.
+
+**Poison handling covers exceptions, not worker-process death.** An ingest that raises (parse error, empty PDF, exhausted 429 retries) ends `failed`; a doc that kills the worker (OOM/segfault) has no redelivery cap under `acks_late`.
+Why: exception-poison is the common case and is bounded (max 3 retries). Cost: a process-killing doc can loop — a broker-level redelivery cap is deferred to a hardening slice.
+
 ## Auth & isolation
 
 **Username/password → JWT.** Passwords hashed (bcrypt/argon2). Access token only in v1.

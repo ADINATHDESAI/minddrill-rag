@@ -21,16 +21,33 @@ from minddrill.db.session import engine
 from minddrill.main import app
 from minddrill.models import chunk as _chunk  # noqa: F401  registers Chunk on Base.metadata
 from minddrill.models import document as _document  # noqa: F401  registers Document
+from minddrill.models import ingestion_job as _ingestion_job  # noqa: F401  registers IngestionJob
 from minddrill.models import user as _user  # noqa: F401  registers User on Base.metadata
 from minddrill.providers.gemini import get_llm
 from minddrill.rag.embedder import get_embedder
+from minddrill.worker import tasks as _tasks
+from minddrill.worker.celery_app import celery_app
 
 
 @pytest.fixture(autouse=True)
 async def _clean_tables():
     async with engine.begin() as conn:
-        await conn.execute(text("TRUNCATE TABLE users, documents, chunks CASCADE"))
+        await conn.execute(
+            text("TRUNCATE TABLE users, documents, chunks, ingestion_jobs CASCADE")
+        )
     yield
+
+
+@pytest.fixture(autouse=True)
+def _celery_eager(monkeypatch):
+    """Run ingestion tasks inline, with the deterministic fake embedder.
+
+    The FastAPI dependency override only reaches the endpoint; the Celery task
+    resolves its own embedder, so we patch that seam too.
+    """
+    celery_app.conf.task_always_eager = True
+    celery_app.conf.task_eager_propagates = True
+    monkeypatch.setattr(_tasks, "get_embedder", lambda: FakeEmbedder())
 
 
 def _bag_of_words(s: str) -> list[float]:

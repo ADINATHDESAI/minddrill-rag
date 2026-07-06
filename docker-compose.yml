@@ -22,5 +22,19 @@ services:
     ports:
       - "6379:6379"
 
+  worker:
+    build: .
+    command: celery -A minddrill.worker.celery_app worker --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://minddrill:minddrill@db:5432/minddrill
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-dev-secret}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
 volumes:
   pgdata:
