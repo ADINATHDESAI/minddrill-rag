@@ -13,7 +13,9 @@ from minddrill.db.session import Base
 class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
-        UniqueConstraint("user_id", "content_hash", name="uq_documents_user_content_hash"),
+        UniqueConstraint(
+            "user_id", "content_hash", name="uq_documents_user_content_hash"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -30,7 +32,9 @@ class Document(Base):
     title: Mapped[str | None] = mapped_column(Text, nullable=True)
     content_hash: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, index=True)
-    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    metadata_: Mapped[dict] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

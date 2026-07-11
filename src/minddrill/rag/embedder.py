@@ -39,9 +39,7 @@ class GeminiEmbedder:
 
     def _check_dim(self, vec: list[float]) -> list[float]:
         if len(vec) != self._dim:
-            raise ValueError(
-                f"embedding dim {len(vec)} != configured {self._dim}"
-            )
+            raise ValueError(f"embedding dim {len(vec)} != configured {self._dim}")
         return vec
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:

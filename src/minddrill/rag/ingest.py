@@ -26,6 +26,7 @@ log = structlog.get_logger(__name__)
 class EmptyDocumentError(ValueError):
     """The source produced no extractable text to chunk."""
 
+
 # Character-based sizing approximating ~600-token chunks with ~100-token overlap
 # (~4 chars/token). Keeps ingestion dependency-light this slice.
 _CHARS_PER_TOKEN = 4
@@ -54,9 +55,7 @@ async def _existing_document(
     if existing is None:
         return None
     chunk_count = await session.scalar(
-        select(func.count()).select_from(Chunk).where(
-            Chunk.document_id == existing.id
-        )
+        select(func.count()).select_from(Chunk).where(Chunk.document_id == existing.id)
     )
     return IngestResponse(document_id=existing.id, chunk_count=chunk_count)
 

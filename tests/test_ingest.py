@@ -72,9 +72,7 @@ async def test_task_success_stores_chunks_and_marks_done(
 
     async with SessionLocal() as session:
         rows = (
-            await session.scalars(
-                select(Chunk).where(Chunk.document_id == document_id)
-            )
+            await session.scalars(select(Chunk).where(Chunk.document_id == document_id))
         ).all()
     assert len(rows) > 0
     assert all(str(c.user_id) == user_id for c in rows)
@@ -87,11 +85,19 @@ async def test_reingest_same_content_is_idempotent(
     uri = _write_pdf(tmp_path)
     payload = {"source_type": "pdf", "source_uri": uri}
 
-    first_job = (await client.post("/api/v1/ingest", json=payload, headers=headers)).json()
-    second_job = (await client.post("/api/v1/ingest", json=payload, headers=headers)).json()
+    first_job = (
+        await client.post("/api/v1/ingest", json=payload, headers=headers)
+    ).json()
+    second_job = (
+        await client.post("/api/v1/ingest", json=payload, headers=headers)
+    ).json()
 
-    first = (await client.get(f"/api/v1/ingest/{first_job['job_id']}", headers=headers)).json()
-    second = (await client.get(f"/api/v1/ingest/{second_job['job_id']}", headers=headers)).json()
+    first = (
+        await client.get(f"/api/v1/ingest/{first_job['job_id']}", headers=headers)
+    ).json()
+    second = (
+        await client.get(f"/api/v1/ingest/{second_job['job_id']}", headers=headers)
+    ).json()
 
     assert first["status"] == "done"
     assert second["status"] == "done"
@@ -126,9 +132,7 @@ async def test_failure_marks_job_failed_with_error(
     assert body["document_id"] is None
 
 
-async def test_empty_pdf_marks_job_failed(
-    client: httpx.AsyncClient, tmp_path
-) -> None:
+async def test_empty_pdf_marks_job_failed(client: httpx.AsyncClient, tmp_path) -> None:
     _, headers = await register_user(client, "blankpdf")
     path = tmp_path / "blank.pdf"
     path.write_bytes(make_pdf([]))

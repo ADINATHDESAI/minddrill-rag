@@ -33,8 +33,7 @@ def _content_to_text(content: Any) -> str:
         return content
     if isinstance(content, list):
         return "".join(
-            part if isinstance(part, str) else part.get("text", "")
-            for part in content
+            part if isinstance(part, str) else part.get("text", "") for part in content
         )
     return str(content)
 
@@ -64,9 +63,7 @@ class GeminiProvider:
             if text:
                 yield text
 
-    async def generate(
-        self, messages: Sequence[dict[str, Any]], **kwargs: Any
-    ) -> str:
+    async def generate(self, messages: Sequence[dict[str, Any]], **kwargs: Any) -> str:
         parts = [token async for token in self.stream(messages, **kwargs)]
         return "".join(parts)
 

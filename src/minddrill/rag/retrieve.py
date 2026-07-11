@@ -41,9 +41,7 @@ async def _retrieve(
 
 
 def _build_messages(question: str, chunks: list[Chunk]) -> list[dict]:
-    numbered = "\n\n".join(
-        f"[{i}] {c.content}" for i, c in enumerate(chunks, start=1)
-    )
+    numbered = "\n\n".join(f"[{i}] {c.content}" for i, c in enumerate(chunks, start=1))
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": f"Sources:\n{numbered}\n\nQuestion: {question}"},

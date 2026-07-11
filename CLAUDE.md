@@ -48,3 +48,7 @@ A backend-only, production-grade "Ask My Doc" RAG assistant. Portfolio centrepie
 - Log at seams (ingest, retrieve, infer, errors). Never log secrets, JWTs,
   or full document/chunk text — ids only.
 
+## Testing
+- Tests derive the DB from DATABASE_URL as <name>_test. Never use the dev DB.
+- Abort if the resolved test DB name doesn't end in `_test`.
+- Test setup creates the vector and pg_search extensions before tables.
