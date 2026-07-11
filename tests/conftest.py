@@ -1,32 +1,84 @@
 """Shared test fixtures.
 
-Tests run against a real Postgres database (pgvector/pg_search can't be faked),
-pointed at by `DATABASE_URL` — expected to be a dedicated test database (e.g.
-`minddrill_test`), migrated via `alembic upgrade head` before running `pytest -q`.
-Never point this at a database with real data: the fixture below truncates it.
+Tests run against a real Postgres database (pgvector/pg_search can't be faked).
+The test database is *never* read from `DATABASE_URL` directly — it is derived
+from it below by suffixing the database name with `_test`, so tests can never
+accidentally run (and truncate/drop) whatever database `DATABASE_URL` points at
+for the running app. The derived database, extensions, and tables are created
+automatically; no manual `alembic upgrade head` step is required.
 
 Embedding and LLM calls are faked via dependency overrides so unit tests never
 hit Gemini. The fake embedder is deterministic (bag-of-words) so nearest-neighbour
 ordering is predictable.
 """
 
+import asyncio
+import os
 import re
-
-import httpx
-import pytest
-from sqlalchemy import text
+from urllib.parse import urlsplit, urlunsplit
 
 from minddrill.config import get_settings
-from minddrill.db.session import engine
-from minddrill.main import app
-from minddrill.models import chunk as _chunk  # noqa: F401  registers Chunk on Base.metadata
-from minddrill.models import document as _document  # noqa: F401  registers Document
-from minddrill.models import ingestion_job as _ingestion_job  # noqa: F401  registers IngestionJob
-from minddrill.models import user as _user  # noqa: F401  registers User on Base.metadata
-from minddrill.providers.gemini import get_llm
-from minddrill.rag.embedder import get_embedder
-from minddrill.worker import tasks as _tasks
-from minddrill.worker.celery_app import celery_app
+
+
+def _resolve_test_database_url() -> str:
+    """Derive the test DB URL from DATABASE_URL by suffixing the db name with `_test`.
+
+    Never used verbatim: this exists so tests can't be pointed at a real database
+    by accident. Aborts loudly if the resolved name doesn't end in `_test`.
+    """
+    base_url = get_settings().database_url
+    parts = urlsplit(base_url)
+    db_name = parts.path.lstrip("/")
+    if not db_name:
+        raise RuntimeError(
+            f"DATABASE_URL has no database name to derive a test database from: {base_url!r}"
+        )
+    test_name = f"{db_name}_test"
+    test_url = urlunsplit(
+        (parts.scheme, parts.netloc, f"/{test_name}", parts.query, parts.fragment)
+    )
+
+    resolved_name = urlsplit(test_url).path.lstrip("/")
+    if not resolved_name.endswith("_test"):
+        raise RuntimeError(
+            f"Refusing to run tests: resolved database name {resolved_name!r} "
+            "does not end in '_test'. Tests must never run against a non-test database."
+        )
+    return test_url
+
+
+# Must happen before any import that creates the DB engine (minddrill.db.session,
+# minddrill.main, ...), so the whole app wires up against the test database.
+os.environ["DATABASE_URL"] = _resolve_test_database_url()
+get_settings.cache_clear()
+
+import httpx  # noqa: E402
+import pytest  # noqa: E402
+from sqlalchemy import text  # noqa: E402
+
+from minddrill.db.session import Base, engine  # noqa: E402
+from minddrill.main import app  # noqa: E402
+from minddrill.models import chunk as _chunk  # noqa: E402,F401  registers Chunk on Base.metadata
+from minddrill.models import document as _document  # noqa: E402,F401  registers Document
+from minddrill.models import ingestion_job as _ingestion_job  # noqa: E402,F401  registers IngestionJob
+from minddrill.models import user as _user  # noqa: E402,F401  registers User on Base.metadata
+from minddrill.providers.gemini import get_llm  # noqa: E402
+from minddrill.rag.embedder import get_embedder  # noqa: E402
+from minddrill.worker import tasks as _tasks  # noqa: E402
+from minddrill.worker.celery_app import celery_app  # noqa: E402
+
+
+async def _init_test_schema() -> None:
+    async with engine.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_search"))
+        await conn.run_sync(Base.metadata.create_all)
+    # Runs in its own event loop, separate from the one pytest-asyncio uses for
+    # tests; dispose the pool so no connection is reused across loops.
+    await engine.dispose()
+
+
+asyncio.run(_init_test_schema())
 
 
 @pytest.fixture(autouse=True)
