@@ -24,6 +24,9 @@ Why: semantic and keyword scores live on different scales; RRF fuses by rank, no
 **Local cross-encoder rerank (Sentence Transformers), not Cohere.**
 Why: free, no rate limit, no network hop. Cost: CPU-bound — must run in a threadpool so it never blocks the async loop. Kept behind a `Reranker` interface so Cohere can swap in later.
 
+**Hybrid arms run sequentially on one session, not in parallel.**
+Why: a single asyncpg connection can't multiplex two concurrent queries; literal parallelism would need separate connections/engines. Cost: two round-trips instead of one — negligible at our scale, revisit only if arm latency dominates.
+
 ## Ingestion vs query (the core split)
 
 **Celery + Redis for ingestion only.**

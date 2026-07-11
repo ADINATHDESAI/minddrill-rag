@@ -59,7 +59,7 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from minddrill.db.session import Base, engine  # noqa: E402
+from minddrill.db.session import Base, SessionLocal, engine  # noqa: E402
 from minddrill.main import app  # noqa: E402
 from minddrill.models import chunk as _chunk  # noqa: E402,F401  registers Chunk on Base.metadata
 from minddrill.models import document as _document  # noqa: E402,F401  registers Document
@@ -76,6 +76,14 @@ async def _init_test_schema() -> None:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_search"))
         await conn.run_sync(Base.metadata.create_all)
+        # The BM25 index is a `USING bm25` index create_all can't emit; mirror
+        # the 0004 migration here so the keyword arm's @@@ query works in tests.
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS chunks_bm25 ON chunks "
+                "USING bm25 (id, content, user_id) WITH (key_field='id')"
+            )
+        )
     # Runs in its own event loop, separate from the one pytest-asyncio uses for
     # tests; dispose the pool so no connection is reused across loops.
     await engine.dispose()
@@ -135,6 +143,13 @@ class FakeLLM:
     async def generate(self, messages, **kwargs) -> str:
         self.last_messages = list(messages)
         return "canned answer [1]"
+
+
+@pytest.fixture
+async def db_session():
+    """A raw async session for exercising retrieval directly, without the API."""
+    async with SessionLocal() as session:
+        yield session
 
 
 @pytest.fixture
