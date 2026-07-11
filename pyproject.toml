@@ -39,3 +39,9 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
+filterwarnings = [
+    # langchain-community is sunsetting as a package, but there's no stable
+    # standalone replacement for PyPDFLoader yet, and CLAUDE.md pins loaders to
+    # LangChain. Tracked upstream, not actionable here.
+    "ignore:`langchain-community` is being sunset:DeprecationWarning",
+]

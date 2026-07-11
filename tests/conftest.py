@@ -50,6 +50,9 @@ def _resolve_test_database_url() -> str:
 # Must happen before any import that creates the DB engine (minddrill.db.session,
 # minddrill.main, ...), so the whole app wires up against the test database.
 os.environ["DATABASE_URL"] = _resolve_test_database_url()
+# Tests don't depend on the dev secret's strength (or even its presence) — pin a
+# fixed, sufficiently long one so HS256 signing never warns about a weak key.
+os.environ["JWT_SECRET"] = "test-only-jwt-signing-secret-not-for-production-0123456789"
 get_settings.cache_clear()
 
 import httpx  # noqa: E402
