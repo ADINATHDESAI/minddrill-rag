@@ -15,14 +15,16 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from minddrill.config import get_settings
 from minddrill.models.chunk import Chunk
 from minddrill.providers.gemini import GeminiProvider
 from minddrill.rag.embedder import Embedder
+from minddrill.rag.reranker import Reranker
 from minddrill.rag.schemas import QueryResponse, Source
 
 log = structlog.get_logger(__name__)
 
-_TOP_K = 5  # chunks handed to the LLM after fusion
+_CANDIDATE_K = 20  # fused candidates handed to the reranker
 _ARM_K = 20  # candidates pulled from each arm before fusion
 _RRF_K = 60  # RRF damping constant
 _NO_CONTEXT_ANSWER = (
@@ -136,15 +138,21 @@ async def answer_question(
     question: str,
     embedder: Embedder,
     llm: GeminiProvider,
+    reranker: Reranker,
 ) -> QueryResponse:
     query_vec = await embedder.embed_query(question)
-    chunks = await Retriever(session).hybrid_search(
-        question, query_vec, user_id, _TOP_K
+    candidates = await Retriever(session).hybrid_search(
+        question, query_vec, user_id, _CANDIDATE_K
     )
 
-    if not chunks:
+    if not candidates:
         log.info("query.no_context", user_id=str(user_id))
         return QueryResponse(answer=_NO_CONTEXT_ANSWER, sources=[])
+
+    # Re-score the fused candidates and keep the best few. The reranker only
+    # reorders chunks already scoped to this user by both retrieval arms, so it
+    # opens no new isolation surface.
+    chunks = await reranker.rerank(question, candidates, get_settings().rerank_top_n)
 
     answer = await llm.generate(_build_messages(question, chunks))
     log.info("query.answered", user_id=str(user_id), source_count=len(chunks))

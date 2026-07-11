@@ -24,7 +24,7 @@ async def _ingest(client: httpx.AsyncClient, headers: dict, tmp_path) -> None:
 
 
 async def test_query_returns_answer_and_sources(
-    client: httpx.AsyncClient, llm, tmp_path
+    client: httpx.AsyncClient, llm, reranker, tmp_path
 ) -> None:
     _, headers = await register_user(client, "asker")
     await _ingest(client, headers, tmp_path)
@@ -43,6 +43,7 @@ async def test_query_returns_answer_and_sources(
         assert src["chunk_id"]
         assert src["document_id"]
     assert llm.last_messages is not None  # the LLM was actually called
+    assert reranker.calls  # re-ranking sat between retrieval and the prompt
 
 
 async def test_query_with_no_documents_declines_without_calling_llm(

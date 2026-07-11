@@ -22,7 +22,7 @@ Why: flexibility without schema churn. Cost: core fields we filter/join on stay 
 Why: semantic and keyword scores live on different scales; RRF fuses by rank, no fragile normalization. Cost: none meaningful.
 
 **Local cross-encoder rerank (Sentence Transformers), not Cohere.**
-Why: free, no rate limit, no network hop. Cost: CPU-bound — must run in a threadpool so it never blocks the async loop. Kept behind a `Reranker` interface so Cohere can swap in later.
+Why: free, no rate limit, no network hop. Cost: CPU-bound — must run in a threadpool so it never blocks the async loop. Kept behind a `Reranker` interface so Cohere can swap in later. Model loads once at startup (FastAPI `lifespan`), not per request. The disable flag (`RERANK_ENABLED`) is a passthrough reranker chosen at the factory, keeping the query path branch-free; rerank scores are logged at the seam, not surfaced through the API (no consumer reads them yet).
 
 **Hybrid arms run sequentially on one session, not in parallel.**
 Why: a single asyncpg connection can't multiplex two concurrent queries; literal parallelism would need separate connections/engines. Cost: two round-trips instead of one — negligible at our scale, revisit only if arm latency dominates.

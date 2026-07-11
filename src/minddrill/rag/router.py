@@ -17,6 +17,7 @@ from minddrill.models.ingestion_job import IngestionJob
 from minddrill.models.user import User
 from minddrill.providers.gemini import GeminiProvider, get_llm, is_rate_limit_error
 from minddrill.rag.embedder import Embedder, get_embedder
+from minddrill.rag.reranker import Reranker, get_reranker
 from minddrill.rag.retrieve import answer_question
 from minddrill.rag.schemas import (
     IngestJobResponse,
@@ -93,10 +94,11 @@ async def query(
     session: AsyncSession = Depends(get_session),
     embedder: Embedder = Depends(get_embedder),
     llm: GeminiProvider = Depends(get_llm),
+    reranker: Reranker = Depends(get_reranker),
 ) -> QueryResponse:
     try:
         return await answer_question(
-            session, current_user.id, body.question, embedder, llm
+            session, current_user.id, body.question, embedder, llm, reranker
         )
     except Exception as exc:
         if is_rate_limit_error(exc):

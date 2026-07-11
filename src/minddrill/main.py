@@ -3,6 +3,9 @@
 Routers for auth, ingestion, chat, etc. mount onto `create_app()` per slice.
 """
 
+import asyncio
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
@@ -11,6 +14,7 @@ from minddrill.auth.router import router as auth_router
 from minddrill.config import get_settings
 from minddrill.logging import RequestIDMiddleware, configure_logging
 from minddrill.models.user import User
+from minddrill.rag.reranker import warm_reranker
 from minddrill.rag.router import router as rag_router
 
 # Maps HTTPException.status_code -> the API spec's error `code` string.
@@ -26,10 +30,18 @@ _ERROR_CODES = {
 }
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    # Load the cross-encoder once at startup so the first query doesn't eat the
+    # model-load latency. Off the loop — construction is blocking.
+    await asyncio.to_thread(warm_reranker)
+    yield
+
+
 def create_app() -> FastAPI:
     configure_logging(get_settings().log_level)
 
-    app = FastAPI(title="MindDrill")
+    app = FastAPI(title="MindDrill", lifespan=_lifespan)
     app.add_middleware(RequestIDMiddleware)
 
     @app.exception_handler(HTTPException)

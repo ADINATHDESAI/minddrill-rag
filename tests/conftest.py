@@ -67,6 +67,7 @@ from minddrill.models import ingestion_job as _ingestion_job  # noqa: E402,F401 
 from minddrill.models import user as _user  # noqa: E402,F401  registers User on Base.metadata
 from minddrill.providers.gemini import get_llm  # noqa: E402
 from minddrill.rag.embedder import get_embedder  # noqa: E402
+from minddrill.rag.reranker import get_reranker  # noqa: E402
 from minddrill.worker import tasks as _tasks  # noqa: E402
 from minddrill.worker.celery_app import celery_app  # noqa: E402
 
@@ -145,6 +146,26 @@ class FakeLLM:
         return "canned answer [1]"
 
 
+class FakeReranker:
+    """Records that it ran and returns the fused order, clamped to top_n.
+
+    Keeps existing query assertions valid while proving the reranker is in the
+    loop; ordering semantics are exercised directly in test_reranker.py.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    async def rerank(self, query: str, chunks: list, top_n: int) -> list:
+        self.calls.append(len(chunks))
+        return chunks[: min(top_n, len(chunks))]
+
+
+@pytest.fixture
+def reranker() -> FakeReranker:
+    return FakeReranker()
+
+
 @pytest.fixture
 async def db_session():
     """A raw async session for exercising retrieval directly, without the API."""
@@ -163,14 +184,16 @@ def llm() -> FakeLLM:
 
 
 @pytest.fixture
-async def client(embedder: FakeEmbedder, llm: FakeLLM):
+async def client(embedder: FakeEmbedder, llm: FakeLLM, reranker: FakeReranker):
     app.dependency_overrides[get_embedder] = lambda: embedder
     app.dependency_overrides[get_llm] = lambda: llm
+    app.dependency_overrides[get_reranker] = lambda: reranker
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     app.dependency_overrides.pop(get_embedder, None)
     app.dependency_overrides.pop(get_llm, None)
+    app.dependency_overrides.pop(get_reranker, None)
 
 
 async def register_user(

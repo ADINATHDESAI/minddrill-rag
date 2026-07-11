@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     embed_dim: int = 768
     log_level: str = "INFO"
+    rerank_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
+    rerank_top_n: int = 5
+    rerank_enabled: bool = True
 
 
 @lru_cache
