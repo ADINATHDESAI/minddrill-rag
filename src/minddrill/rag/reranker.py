@@ -24,8 +24,14 @@ log = structlog.get_logger(__name__)
 
 @runtime_checkable
 class Reranker(Protocol):
-    async def rerank(self, query: str, chunks: list[Chunk], top_n: int) -> list[Chunk]:
-        """Re-score query–chunk pairs and return the top_n chunks, best first."""
+    async def rerank(
+        self, query: str, chunks: list[Chunk], top_n: int
+    ) -> list[tuple[Chunk, float]]:
+        """Re-score query–chunk pairs; return the top_n (chunk, score), best first.
+
+        The score is the relevance signal the grounding gate and the `sources`
+        event both read.
+        """
         ...
 
 
@@ -43,7 +49,9 @@ class CrossEncoderReranker:
             model = CrossEncoder(get_settings().rerank_model)
         self._model = model
 
-    async def rerank(self, query: str, chunks: list[Chunk], top_n: int) -> list[Chunk]:
+    async def rerank(
+        self, query: str, chunks: list[Chunk], top_n: int
+    ) -> list[tuple[Chunk, float]]:
         top_n = _clamp(top_n, len(chunks))
         if top_n == 0:
             return []
@@ -52,12 +60,12 @@ class CrossEncoderReranker:
         ranked = sorted(
             zip(chunks, scores), key=lambda pair: float(pair[1]), reverse=True
         )
-        top = [chunk for chunk, _ in ranked[:top_n]]
+        top = [(chunk, float(score)) for chunk, score in ranked[:top_n]]
         log.info(
             "rerank.done",
             candidates=len(chunks),
             top_n=top_n,
-            top_ids=[str(c.id) for c in top],
+            top_ids=[str(c.id) for c, _ in top],
         )
         return top
 
@@ -68,8 +76,12 @@ class PassthroughReranker:
     Used when re-ranking is disabled (the eval/benchmark baseline).
     """
 
-    async def rerank(self, query: str, chunks: list[Chunk], top_n: int) -> list[Chunk]:
-        return chunks[: _clamp(top_n, len(chunks))]
+    async def rerank(
+        self, query: str, chunks: list[Chunk], top_n: int
+    ) -> list[tuple[Chunk, float]]:
+        # No cross-encoder score to report; the grounding gate is skipped when
+        # reranking is disabled, so the 0.0 placeholder is never used as a signal.
+        return [(c, 0.0) for c in chunks[: _clamp(top_n, len(chunks))]]
 
 
 @lru_cache

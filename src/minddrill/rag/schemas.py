@@ -33,10 +33,7 @@ class QueryRequest(BaseModel):
 
 
 class Source(BaseModel):
+    id: int  # inline citation marker [id] the model writes in the streamed text
     chunk_id: UUID
     document_id: UUID
-
-
-class QueryResponse(BaseModel):
-    answer: str
-    sources: list[Source]
+    score: float

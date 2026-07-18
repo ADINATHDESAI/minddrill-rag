@@ -65,7 +65,7 @@ from minddrill.models import chunk as _chunk  # noqa: E402,F401  registers Chunk
 from minddrill.models import document as _document  # noqa: E402,F401  registers Document
 from minddrill.models import ingestion_job as _ingestion_job  # noqa: E402,F401  registers IngestionJob
 from minddrill.models import user as _user  # noqa: E402,F401  registers User on Base.metadata
-from minddrill.providers.gemini import get_llm  # noqa: E402
+from minddrill.providers.failover import get_providers  # noqa: E402
 from minddrill.rag.embedder import get_embedder  # noqa: E402
 from minddrill.rag.reranker import get_reranker  # noqa: E402
 from minddrill.worker import tasks as _tasks  # noqa: E402
@@ -133,32 +133,39 @@ class FakeEmbedder:
 
 
 class FakeLLM:
-    """Records the prompt it was given and returns a canned grounded answer."""
+    """A single fake provider: streams canned grounded tokens, records the prompt."""
 
-    def __init__(self) -> None:
+    def __init__(self, tokens=("canned ", "answer ", "[1]")) -> None:
+        self.tokens = tuple(tokens)
         self.last_messages: list[dict] | None = None
+        self.streamed = False
+        self.last_usage = {"input_tokens": 3, "output_tokens": len(self.tokens)}
 
     async def stream(self, messages, **kwargs):
-        yield "canned answer [1]"
+        self.last_messages = list(messages)
+        self.streamed = True
+        for tok in self.tokens:
+            yield tok
 
     async def generate(self, messages, **kwargs) -> str:
-        self.last_messages = list(messages)
-        return "canned answer [1]"
+        return "".join([tok async for tok in self.stream(messages, **kwargs)])
 
 
 class FakeReranker:
-    """Records that it ran and returns the fused order, clamped to top_n.
+    """Records that it ran and returns the fused order (scored), clamped to top_n.
 
-    Keeps existing query assertions valid while proving the reranker is in the
-    loop; ordering semantics are exercised directly in test_reranker.py.
+    The fixed high score keeps the grounding gate open for the happy path;
+    ordering semantics are exercised directly in test_reranker.py.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, score: float = 5.0) -> None:
         self.calls: list[int] = []
+        self.score = score
 
     async def rerank(self, query: str, chunks: list, top_n: int) -> list:
         self.calls.append(len(chunks))
-        return chunks[: min(top_n, len(chunks))]
+        top = chunks[: min(top_n, len(chunks))]
+        return [(c, self.score) for c in top]
 
 
 @pytest.fixture
@@ -186,14 +193,33 @@ def llm() -> FakeLLM:
 @pytest.fixture
 async def client(embedder: FakeEmbedder, llm: FakeLLM, reranker: FakeReranker):
     app.dependency_overrides[get_embedder] = lambda: embedder
-    app.dependency_overrides[get_llm] = lambda: llm
+    app.dependency_overrides[get_providers] = lambda: [llm]
     app.dependency_overrides[get_reranker] = lambda: reranker
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     app.dependency_overrides.pop(get_embedder, None)
-    app.dependency_overrides.pop(get_llm, None)
+    app.dependency_overrides.pop(get_providers, None)
     app.dependency_overrides.pop(get_reranker, None)
+
+
+def parse_sse(body: str) -> list[tuple[str, dict]]:
+    """Parse an SSE response body into an ordered list of (event, data) pairs."""
+    import json
+
+    events: list[tuple[str, dict]] = []
+    for block in body.replace("\r\n", "\n").strip().split("\n\n"):
+        if not block.strip():
+            continue
+        name = None
+        data = None
+        for line in block.split("\n"):
+            if line.startswith("event:"):
+                name = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data = line[len("data:") :].strip()
+        events.append((name, json.loads(data) if data else None))
+    return events
 
 
 async def register_user(

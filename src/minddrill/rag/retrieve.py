@@ -8,7 +8,10 @@ Fusing by rank (RRF) means the two arms' different score scales never need
 normalization.
 """
 
+import time
 import uuid
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass
 
 import structlog
 from sqlalchemy import select, text
@@ -17,19 +20,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from minddrill.config import get_settings
 from minddrill.models.chunk import Chunk
-from minddrill.providers.gemini import GeminiProvider
+from minddrill.providers.base import LLMProvider
+from minddrill.providers.failover import ProvidersUnavailable, open_stream
+from minddrill.rag import events
 from minddrill.rag.embedder import Embedder
 from minddrill.rag.reranker import Reranker
-from minddrill.rag.schemas import QueryResponse, Source
 
 log = structlog.get_logger(__name__)
 
 _CANDIDATE_K = 20  # fused candidates handed to the reranker
 _ARM_K = 20  # candidates pulled from each arm before fusion
 _RRF_K = 60  # RRF damping constant
-_NO_CONTEXT_ANSWER = (
-    "I don't have any relevant context in your documents to answer that."
-)
+_NO_CONTEXT_REASON = "your documents do not contain anything relevant to that question"
+_WEAK_CONTEXT_REASON = "the retrieved context does not support the question"
 _SYSTEM_PROMPT = (
     "You answer strictly from the numbered sources below. Cite them inline with "
     "markers like [1]. If the sources do not answer the question, say you don't "
@@ -132,31 +135,152 @@ def _build_messages(question: str, chunks: list[Chunk]) -> list[dict]:
     ]
 
 
-async def answer_question(
+@dataclass
+class AnswerPlan:
+    """The pre-flight decision for a query, made before the SSE stream opens.
+
+    Either a decline (retrieval empty or below the grounding floor) or a ready-
+    to-generate plan carrying the `sources` payload and the assembled prompt.
+    """
+
+    start: float
+    user_id: uuid.UUID
+    decline_reason: str | None = None
+    sources: list[dict] | None = None
+    messages: list[dict] | None = None
+
+
+async def prepare_answer(
     session: AsyncSession,
     user_id: uuid.UUID,
     question: str,
     embedder: Embedder,
-    llm: GeminiProvider,
     reranker: Reranker,
-) -> QueryResponse:
+) -> AnswerPlan:
+    """Embed → retrieve (scoped) → rerank → grounding gate. No provider call yet."""
+    start = time.perf_counter()
     query_vec = await embedder.embed_query(question)
     candidates = await Retriever(session).hybrid_search(
         question, query_vec, user_id, _CANDIDATE_K
     )
-
     if not candidates:
         log.info("query.no_context", user_id=str(user_id))
-        return QueryResponse(answer=_NO_CONTEXT_ANSWER, sources=[])
+        return AnswerPlan(
+            start=start, user_id=user_id, decline_reason=_NO_CONTEXT_REASON
+        )
 
-    # Re-score the fused candidates and keep the best few. The reranker only
-    # reorders chunks already scoped to this user by both retrieval arms, so it
-    # opens no new isolation surface.
-    chunks = await reranker.rerank(question, candidates, get_settings().rerank_top_n)
+    # The reranker only reorders chunks already scoped to this user by both
+    # retrieval arms, so it opens no new isolation surface.
+    settings = get_settings()
+    scored = await reranker.rerank(question, candidates, settings.rerank_top_n)
 
-    answer = await llm.generate(_build_messages(question, chunks))
-    log.info("query.answered", user_id=str(user_id), source_count=len(chunks))
-    return QueryResponse(
-        answer=answer,
-        sources=[Source(chunk_id=c.id, document_id=c.document_id) for c in chunks],
+    # Grounding gate: only meaningful with a real relevance score, so it is
+    # skipped when reranking is disabled (the passthrough reports 0.0).
+    if settings.rerank_enabled and (
+        not scored or scored[0][1] < settings.grounding_min_score
+    ):
+        top = scored[0][1] if scored else None
+        log.info("query.declined", user_id=str(user_id), top_score=top)
+        return AnswerPlan(
+            start=start, user_id=user_id, decline_reason=_WEAK_CONTEXT_REASON
+        )
+
+    chunks = [c for c, _ in scored]
+    sources = [
+        {
+            "id": i,
+            "chunk_id": str(c.id),
+            "document_id": str(c.document_id),
+            "score": score,
+        }
+        for i, (c, score) in enumerate(scored, start=1)
+    ]
+    return AnswerPlan(
+        start=start,
+        user_id=user_id,
+        sources=sources,
+        messages=_build_messages(question, chunks),
     )
+
+
+async def stream_answer(
+    plan: AnswerPlan,
+    tokens: AsyncIterator[str],
+    provider: LLMProvider,
+    ttft_ms: int,
+) -> AsyncIterator[dict]:
+    """Emit the SSE events for a committed answer: sources → tokens → done.
+
+    `tokens` already has its first token pulled (failover resolved), so opening
+    this generator never fails over. On client disconnect, sse-starlette cancels
+    the task driving this generator, raising GeneratorExit at the suspended
+    `yield`; the `finally` then closes the provider stream to end token spend.
+    Doing it that way avoids a second consumer of the ASGI `receive` channel,
+    which sse-starlette already owns for disconnect detection.
+    """
+    yield events.sources(plan.sources)
+    yield events.status("generating")
+    text_parts: list[str] = []
+    try:
+        async for tok in tokens:
+            text_parts.append(tok)
+            yield events.token(tok)
+    except Exception as exc:  # failure after the stream opened
+        log.warning("query.stream_error", user_id=str(plan.user_id), error=str(exc))
+        yield events.error("internal_error", "generation failed mid-stream")
+        return
+    finally:
+        # Runs on normal completion, mid-stream error, and cancellation
+        # (disconnect) alike — always releases the upstream provider stream.
+        await tokens.aclose()
+
+    latency_ms = int((time.perf_counter() - plan.start) * 1000)
+    usage = getattr(provider, "last_usage", None) or {
+        "input_tokens": 0,
+        "output_tokens": 0,
+    }
+    log.info(
+        "query.answered",
+        user_id=str(plan.user_id),
+        source_count=len(plan.sources),
+        ttft_ms=ttft_ms,
+        latency_ms=latency_ms,
+    )
+    yield events.done(usage, ttft_ms, latency_ms, grounded=True)
+
+
+async def decline_stream(reason: str) -> AsyncIterator[dict]:
+    yield events.decline(reason)
+
+
+async def run_query(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    question: str,
+    embedder: Embedder,
+    providers: Sequence[LLMProvider],
+    reranker: Reranker,
+) -> AsyncIterator[dict]:
+    """Full query path as an SSE event generator, with failover resolved first.
+
+    Provider failover is resolved *before* this generator yields its first event,
+    so an all-providers-down failure surfaces as `ProvidersUnavailable` (→ 503)
+    rather than a broken half-open stream.
+    """
+    plan = await prepare_answer(session, user_id, question, embedder, reranker)
+    if plan.decline_reason is not None:
+        return decline_stream(plan.decline_reason)
+
+    tokens, provider = await open_stream(providers, plan.messages)
+    ttft_ms = int((time.perf_counter() - plan.start) * 1000)
+    return stream_answer(plan, tokens, provider, ttft_ms)
+
+
+__all__ = [
+    "AnswerPlan",
+    "ProvidersUnavailable",
+    "Retriever",
+    "prepare_answer",
+    "run_query",
+    "stream_answer",
+]

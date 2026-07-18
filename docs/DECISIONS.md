@@ -66,6 +66,15 @@ Why: the originally specced `text-embedding-004` is no longer served on current 
 **LangChain chat models as per-provider adapters inside our own interface.**
 Why: free multi-provider + typed content blocks; our failover/stream orchestration stays ours.
 
+**Grounding gate = cross-encoder top-score below `grounding_min_score` (default 0.0) → `decline`.** Skipped when reranking is disabled (passthrough has no score).
+Why: the reranker already scores relevance; a single threshold reuses that signal without a second LLM judge. It runs before the token stream opens, so weak retrieval never spends generation.
+
+**Reranker returns `(chunk, score)` pairs.**
+Why: one interface change feeds two new consumers — the grounding gate and the `score` field on the `sources` event.
+
+**Failover commits to a provider only after its first token; all-providers-down → HTTP 503 before any SSE opens.**
+Why: the first token is buffered and replayed, so the client never sees a mid-open failover; an exhausted chain is a plain JSON error, not a broken stream.
+
 **Pydantic validation only where a machine consumes output** (tool inputs, DB writes, agent steps) — not streamed chat text.
 Why: you can't validate half an object or un-send streamed tokens. Most "structure" (sources, cost, latency) we compute ourselves.
 

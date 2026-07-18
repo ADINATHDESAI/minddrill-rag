@@ -26,11 +26,17 @@ class Settings(BaseSettings):
     redis_url: str
     jwt_secret: str
     gemini_api_key: str = ""
+    openrouter_api_key: str = ""
+    openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
     embed_dim: int = 768
     log_level: str = "INFO"
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
     rerank_top_n: int = 5
     rerank_enabled: bool = True
+    # Cross-encoder relevance floor for the top reranked chunk. Below it, the
+    # retrieved context is treated as not supporting the question and the answer
+    # is declined instead of generated.
+    grounding_min_score: float = 0.0
 
 
 @lru_cache

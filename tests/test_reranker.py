@@ -37,7 +37,8 @@ async def test_rerank_moves_relevant_chunk_to_rank_1():
 
     ranked = await reranker.rerank("the query", chunks, top_n=3)
 
-    assert [c.content for c in ranked] == ["dead on", "barely related", "off topic"]
+    assert [c.content for c, _ in ranked] == ["dead on", "barely related", "off topic"]
+    assert [s for _, s in ranked] == [0.9, 0.2, 0.05]
 
 
 async def test_rerank_output_length_equals_top_n():
@@ -49,7 +50,7 @@ async def test_rerank_output_length_equals_top_n():
 
     assert len(ranked) == 2
     # Highest scores are the last two, best first.
-    assert [c.content for c in ranked] == ["c5", "c4"]
+    assert [c.content for c, _ in ranked] == ["c5", "c4"]
 
 
 async def test_rerank_clamps_top_n_above_input():
@@ -59,7 +60,7 @@ async def test_rerank_clamps_top_n_above_input():
 
     ranked = await reranker.rerank("q", chunks, top_n=10)
 
-    assert [c.content for c in ranked] == ["b", "a"]
+    assert [c.content for c, _ in ranked] == ["b", "a"]
 
 
 async def test_rerank_empty_input_returns_empty():
@@ -101,7 +102,7 @@ async def test_passthrough_keeps_fused_order_and_clamps():
 
     ranked = await reranker.rerank("q", chunks, top_n=2)
 
-    assert [c.content for c in ranked] == ["first", "second"]
+    assert [c.content for c, _ in ranked] == ["first", "second"]
 
 
 def test_disable_flag_selects_passthrough(monkeypatch):

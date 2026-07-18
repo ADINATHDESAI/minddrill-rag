@@ -1,7 +1,7 @@
 import httpx
 
 from tests._pdfgen import make_pdf
-from tests.conftest import register_user
+from tests.conftest import parse_sse, register_user
 
 _A_LINES = [
     "Project Zephyr is a confidential internal initiative.",
@@ -35,7 +35,9 @@ async def test_user_b_query_never_returns_user_a_chunks(
     )
 
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    # The retrieval filter WHERE user_id = current_user must exclude A's chunks.
-    assert body["sources"] == []
-    assert llm.last_messages is None  # nothing retrieved -> LLM never sees A's text
+    names = [name for name, _ in parse_sse(resp.text)]
+    # The retrieval filter WHERE user_id = current_user must exclude A's chunks,
+    # so B gets a decline with no sources and no generation over A's text.
+    assert "decline" in names
+    assert "sources" not in names
+    assert not llm.streamed  # nothing retrieved -> LLM never sees A's text

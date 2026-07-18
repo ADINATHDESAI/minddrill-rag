@@ -54,11 +54,19 @@ class GeminiProvider:
         self._client = ChatGoogleGenerativeAI(
             model=_CHAT_MODEL, google_api_key=settings.gemini_api_key
         )
+        self.last_usage: dict[str, int] | None = None
 
     async def stream(
         self, messages: Sequence[dict[str, Any]], **kwargs: Any
     ) -> AsyncIterator[str]:
+        self.last_usage = None
         async for chunk in self._client.astream(_to_lc_messages(messages)):
+            usage = getattr(chunk, "usage_metadata", None)
+            if usage:  # arrives on the final chunk of the stream
+                self.last_usage = {
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
+                }
             text = _content_to_text(chunk.content)
             if text:
                 yield text

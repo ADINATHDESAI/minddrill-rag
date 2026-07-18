@@ -10,23 +10,28 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
 from minddrill.auth.deps import get_current_user
 from minddrill.db.session import get_session
 from minddrill.models.ingestion_job import IngestionJob
 from minddrill.models.user import User
-from minddrill.providers.gemini import GeminiProvider, get_llm, is_rate_limit_error
+from minddrill.providers.base import LLMProvider
+from minddrill.providers.failover import ProvidersUnavailable, get_providers
 from minddrill.rag.embedder import Embedder, get_embedder
 from minddrill.rag.reranker import Reranker, get_reranker
-from minddrill.rag.retrieve import answer_question
+from minddrill.rag.retrieve import run_query
 from minddrill.rag.schemas import (
     IngestJobResponse,
     IngestJobStatus,
     IngestRequest,
     QueryRequest,
-    QueryResponse,
 )
 from minddrill.worker.tasks import ingest_document
+
+# Proxies buffer by default; SSE needs them not to. sse-starlette sets these too,
+# but declaring them here keeps the contract explicit.
+_SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 router = APIRouter(tags=["rag"])
 
@@ -87,23 +92,30 @@ async def ingest_status(
     )
 
 
-@router.post("/query", response_model=QueryResponse)
+@router.post("/query")
 async def query(
     body: QueryRequest,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     embedder: Embedder = Depends(get_embedder),
-    llm: GeminiProvider = Depends(get_llm),
+    providers: list[LLMProvider] = Depends(get_providers),
     reranker: Reranker = Depends(get_reranker),
-) -> QueryResponse:
+) -> EventSourceResponse:
+    # Retrieval, grounding, and provider failover all resolve here, before the
+    # stream opens: an all-providers-down failure returns a plain 503, never a
+    # half-open SSE stream.
     try:
-        return await answer_question(
-            session, current_user.id, body.question, embedder, llm, reranker
+        generator = await run_query(
+            session,
+            current_user.id,
+            body.question,
+            embedder,
+            providers,
+            reranker,
         )
-    except Exception as exc:
-        if is_rate_limit_error(exc):
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="inference provider rate limit",
-            )
-        raise
+    except ProvidersUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="all inference providers failed",
+        )
+    return EventSourceResponse(generator, headers=_SSE_HEADERS)
