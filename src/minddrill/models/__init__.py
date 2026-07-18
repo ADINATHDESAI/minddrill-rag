@@ -9,6 +9,8 @@ importing `IngestionJob`) still get the whole schema registered.
 from minddrill.models.chunk import Chunk
 from minddrill.models.document import Document
 from minddrill.models.ingestion_job import IngestionJob
+from minddrill.models.message import Message
+from minddrill.models.session import ChatSession
 from minddrill.models.user import User
 
-__all__ = ["Chunk", "Document", "IngestionJob", "User"]
+__all__ = ["ChatSession", "Chunk", "Document", "IngestionJob", "Message", "User"]

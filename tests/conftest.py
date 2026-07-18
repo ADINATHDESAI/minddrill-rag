@@ -64,6 +64,8 @@ from minddrill.main import app  # noqa: E402
 from minddrill.models import chunk as _chunk  # noqa: E402,F401  registers Chunk on Base.metadata
 from minddrill.models import document as _document  # noqa: E402,F401  registers Document
 from minddrill.models import ingestion_job as _ingestion_job  # noqa: E402,F401  registers IngestionJob
+from minddrill.models import message as _message  # noqa: E402,F401  registers Message
+from minddrill.models import session as _session_model  # noqa: E402,F401  registers ChatSession
 from minddrill.models import user as _user  # noqa: E402,F401  registers User on Base.metadata
 from minddrill.providers.failover import get_providers  # noqa: E402
 from minddrill.rag.embedder import get_embedder  # noqa: E402
@@ -97,7 +99,10 @@ asyncio.run(_init_test_schema())
 async def _clean_tables():
     async with engine.begin() as conn:
         await conn.execute(
-            text("TRUNCATE TABLE users, documents, chunks, ingestion_jobs CASCADE")
+            text(
+                "TRUNCATE TABLE users, documents, chunks, ingestion_jobs, "
+                "sessions, messages CASCADE"
+            )
         )
     yield
 

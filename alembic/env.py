@@ -17,6 +17,8 @@ from minddrill.db.session import Base
 from minddrill.models import chunk as _chunk  # noqa: F401  registers Chunk on Base.metadata
 from minddrill.models import document as _document  # noqa: F401  registers Document
 from minddrill.models import ingestion_job as _ingestion_job  # noqa: F401  registers IngestionJob
+from minddrill.models import message as _message  # noqa: F401  registers Message
+from minddrill.models import session as _session  # noqa: F401  registers ChatSession
 from minddrill.models import user as _user  # noqa: F401  registers User on Base.metadata
 
 config = context.config

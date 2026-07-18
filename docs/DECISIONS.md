@@ -97,6 +97,9 @@ Why: keeps RAG deterministic for direct questions; tools available when needed.
 **Short-term memory only in v1** (recent turns trimmed to a token budget; summarize when long). No long-term cross-session memory. Kept separate from RAG.
 Why: avoid over-engineering; add long-term only on real need.
 
+**`/chat` memory loads only from the `messages` table; it does not retrieve.** History is trimmed newest-first to `MEMORY_TOKEN_BUDGET` (oldest dropped, newest always kept). User turn persisted before generating; assistant turn persisted only on clean completion, in a fresh DB session decoupled from request-scoped teardown during streaming.
+Why: memory and RAG are different sources — mixing them would leak document context into plain chat; the separate write session avoids relying on request-session lifetime while the SSE body streams. Cost: a failed generation leaves a user turn with no reply (correct — the turn did happen).
+
 ## Local models
 
 **Local SLMs benchmarked offline only — not served in production.** ≤3GB RAM, 2–3B dense at Q4_K_M (e.g. Llama 3.2 3B, Qwen 2.5 3B), same size band.

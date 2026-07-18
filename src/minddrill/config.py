@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     # retrieved context is treated as not supporting the question and the answer
     # is declined instead of generated.
     grounding_min_score: float = 0.0
+    # Token budget for short-term chat memory: recent turns are trimmed to fit
+    # this before building the prompt.
+    memory_token_budget: int = 2000
 
 
 @lru_cache
