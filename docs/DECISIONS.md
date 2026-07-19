@@ -116,6 +116,8 @@ Why: free, self-hosting is an ops signal; streaming unlocks time-to-first-token 
 **Ragas + golden set (50–200 Q&A) as an offline CI gate** in GitHub Actions. Faithfulness + context precision. Server-independent.
 Why: a build that fails on a quality regression is a strong maturity signal.
 
+**Langfuse Cloud free tier, not self-hosted** (revises the earlier "self-hosted Langfuse" decision above). Why: Langfuse v3 self-host now needs ~6 containers and 8GB RAM — too heavy for a cheap server and a limited number of users. Cost: bound by the free-tier monthly event limit; instrumentation is identical, so the self-host path stays open.
+
 ## Ops
 
 **Docker Compose:** API, worker, ParadeDB Postgres, Redis, Langfuse. Cheap self-host.
