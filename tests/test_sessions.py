@@ -6,11 +6,11 @@ documents are ingested in these tests.
 
 import httpx
 
+from minddrill.agent.model import get_agent_model
 from minddrill.main import app
 from minddrill.models.message import Message
-from minddrill.providers.failover import get_providers
 from minddrill.sessions.memory import trim_history
-from tests.conftest import parse_sse, register_user
+from tests.conftest import FakeToolModel, parse_sse, register_user
 
 
 async def _create_session(client: httpx.AsyncClient, headers: dict) -> str:
@@ -115,14 +115,10 @@ async def test_other_users_session_is_404(client: httpx.AsyncClient) -> None:
 # --- failed generation persists no assistant message -----------------------
 
 
-class _MidFailProvider:
-    """Yields one token, then raises — a mid-stream provider failure."""
+class _RaisingModel(FakeToolModel):
+    """A chat model that raises when the agent invokes it."""
 
-    def __init__(self) -> None:
-        self.last_usage = {"input_tokens": 1, "output_tokens": 0}
-
-    async def stream(self, messages, **kwargs):
-        yield "partial "
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         raise RuntimeError("boom")
 
 
@@ -132,11 +128,11 @@ async def test_failed_generation_does_not_persist_assistant(
     _, headers = await register_user(client, "unlucky")
     session_id = await _create_session(client, headers)
 
-    app.dependency_overrides[get_providers] = lambda: [_MidFailProvider()]
+    app.dependency_overrides[get_agent_model] = lambda: _RaisingModel(responses=[])
     try:
         resp = await _chat(client, headers, session_id, "hello")
     finally:
-        app.dependency_overrides.pop(get_providers, None)
+        app.dependency_overrides.pop(get_agent_model, None)
 
     assert resp.status_code == 200, resp.text
     names = [name for name, _ in parse_sse(resp.text)]
@@ -147,30 +143,3 @@ async def test_failed_generation_does_not_persist_assistant(
     messages = resp.json()["messages"]
     # The user turn stays; no assistant turn is written on a failed generation.
     assert [m["role"] for m in messages] == ["user"]
-
-
-class _FailBeforeFirstToken:
-    """Raises before yielding any token — fails during failover, before the stream."""
-
-    async def stream(self, messages, **kwargs):
-        raise RuntimeError("429 quota exceeded")
-        yield  # pragma: no cover
-
-
-async def test_chat_all_providers_down_returns_503(client: httpx.AsyncClient) -> None:
-    _, headers = await register_user(client, "alldown_chatter")
-    session_id = await _create_session(client, headers)
-
-    app.dependency_overrides[get_providers] = lambda: [
-        _FailBeforeFirstToken(),
-        _FailBeforeFirstToken(),
-    ]
-    try:
-        resp = await _chat(client, headers, session_id, "hello")
-    finally:
-        app.dependency_overrides.pop(get_providers, None)
-
-    # Failover resolves before the stream opens, so this is a plain JSON 503.
-    assert resp.status_code == 503
-    assert not resp.headers["content-type"].startswith("text/event-stream")
-    assert resp.json()["error"]["code"] == "providers_unavailable"

@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # Token budget for short-term chat memory: recent turns are trimmed to fit
     # this before building the prompt.
     memory_token_budget: int = 2000
+    # Ceiling on the agent's model calls per request. On the limit the loop ends
+    # and returns the best answer so far instead of spinning tools forever.
+    agent_max_steps: int = 6
 
 
 @lru_cache

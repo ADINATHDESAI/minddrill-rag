@@ -13,14 +13,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from langchain_core.language_models import BaseChatModel
+
+from minddrill.agent.loop import run_agent_chat
+from minddrill.agent.model import get_agent_model, get_fallback_model
 from minddrill.auth.deps import get_current_user
 from minddrill.db.session import get_session
 from minddrill.models.message import Message
 from minddrill.models.session import ChatSession
 from minddrill.models.user import User
-from minddrill.providers.base import LLMProvider
-from minddrill.providers.failover import ProvidersUnavailable, get_providers
-from minddrill.sessions.chat import run_chat
+from minddrill.rag.embedder import Embedder, get_embedder
+from minddrill.rag.reranker import Reranker, get_reranker
 from minddrill.sessions.schemas import (
     ChatRequest,
     CreateSessionRequest,
@@ -94,16 +97,19 @@ async def chat(
     body: ChatRequest,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-    providers: list[LLMProvider] = Depends(get_providers),
+    model: BaseChatModel = Depends(get_agent_model),
+    fallback_model: BaseChatModel | None = Depends(get_fallback_model),
+    embedder: Embedder = Depends(get_embedder),
+    reranker: Reranker = Depends(get_reranker),
 ) -> EventSourceResponse:
     chat_session = await _owned_session(body.session_id, current_user, session)
-    # Memory and provider failover resolve here, before the stream opens: an
-    # all-providers-down failure returns a plain 503, never a half-open stream.
-    try:
-        generator = await run_chat(session, chat_session, body.message, providers)
-    except ProvidersUnavailable:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="all inference providers failed",
-        )
+    generator = await run_agent_chat(
+        session,
+        chat_session,
+        body.message,
+        model=model,
+        fallback_model=fallback_model,
+        embedder=embedder,
+        reranker=reranker,
+    )
     return EventSourceResponse(generator, headers=_SSE_HEADERS)

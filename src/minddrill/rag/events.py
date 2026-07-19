@@ -25,6 +25,14 @@ def token(text: str) -> dict[str, str]:
     return _event("token", {"text": text})
 
 
+def tool_call(tool: str, args: dict[str, Any]) -> dict[str, str]:
+    return _event("tool_call", {"tool": tool, "args": args})
+
+
+def tool_result(tool: str, result: Any) -> dict[str, str]:
+    return _event("tool_result", {"tool": tool, "result": result})
+
+
 def decline(reason: str) -> dict[str, str]:
     return _event("decline", {"reason": reason})
 

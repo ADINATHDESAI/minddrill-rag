@@ -67,6 +67,12 @@ from minddrill.models import ingestion_job as _ingestion_job  # noqa: E402,F401 
 from minddrill.models import message as _message  # noqa: E402,F401  registers Message
 from minddrill.models import session as _session_model  # noqa: E402,F401  registers ChatSession
 from minddrill.models import user as _user  # noqa: E402,F401  registers User on Base.metadata
+from langchain_core.language_models.fake_chat_models import (  # noqa: E402
+    FakeMessagesListChatModel,
+)
+from langchain_core.messages import AIMessage  # noqa: E402
+
+from minddrill.agent.model import get_agent_model, get_fallback_model  # noqa: E402
 from minddrill.providers.failover import get_providers  # noqa: E402
 from minddrill.rag.embedder import get_embedder  # noqa: E402
 from minddrill.rag.reranker import get_reranker  # noqa: E402
@@ -173,6 +179,23 @@ class FakeReranker:
         return [(c, self.score) for c in top]
 
 
+class FakeToolModel(FakeMessagesListChatModel):
+    """A scripted chat model for the agent loop.
+
+    `responses` is a list of `AIMessage`s returned in order — script tool calls
+    by giving an AIMessage with `tool_calls`. `bind_tools` is a no-op so
+    `create_agent` can bind the tool schemas without a real provider.
+    """
+
+    def bind_tools(self, tools, **kwargs):  # noqa: ANN001, ANN003
+        return self
+
+
+@pytest.fixture
+def agent_model() -> FakeToolModel:
+    return FakeToolModel(responses=[AIMessage(content="canned answer [1]")])
+
+
 @pytest.fixture
 def reranker() -> FakeReranker:
     return FakeReranker()
@@ -196,16 +219,25 @@ def llm() -> FakeLLM:
 
 
 @pytest.fixture
-async def client(embedder: FakeEmbedder, llm: FakeLLM, reranker: FakeReranker):
+async def client(
+    embedder: FakeEmbedder,
+    llm: FakeLLM,
+    reranker: FakeReranker,
+    agent_model: FakeToolModel,
+):
     app.dependency_overrides[get_embedder] = lambda: embedder
     app.dependency_overrides[get_providers] = lambda: [llm]
     app.dependency_overrides[get_reranker] = lambda: reranker
+    app.dependency_overrides[get_agent_model] = lambda: agent_model
+    app.dependency_overrides[get_fallback_model] = lambda: None
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     app.dependency_overrides.pop(get_embedder, None)
     app.dependency_overrides.pop(get_providers, None)
     app.dependency_overrides.pop(get_reranker, None)
+    app.dependency_overrides.pop(get_agent_model, None)
+    app.dependency_overrides.pop(get_fallback_model, None)
 
 
 def parse_sse(body: str) -> list[tuple[str, dict]]:
