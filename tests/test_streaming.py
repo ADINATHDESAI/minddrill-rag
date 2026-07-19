@@ -187,11 +187,12 @@ async def test_disconnect_closes_token_stream():
     plan = AnswerPlan(
         start=time.perf_counter(),
         user_id=uuid.uuid4(),
+        request_id="req-disconnect",
         sources=[{"id": 1, "chunk_id": "c", "document_id": "d", "score": 1.0}],
         messages=[{"role": "user", "content": "q"}],
     )
     tokens = _CountingTokens(n=10)
-    gen = stream_answer(plan, tokens, provider=_OkProvider(), ttft_ms=1)
+    gen = stream_answer(plan, tokens, provider=_OkProvider(), ttft_ms=1, failover=False)
 
     # Drive the events sse-starlette would send: sources, status, first token.
     assert (await gen.__anext__())["event"] == "sources"
@@ -224,12 +225,16 @@ async def test_stream_error_closes_token_stream():
     plan = AnswerPlan(
         start=time.perf_counter(),
         user_id=uuid.uuid4(),
+        request_id="req-boom",
         sources=[{"id": 1, "chunk_id": "c", "document_id": "d", "score": 1.0}],
         messages=[{"role": "user", "content": "q"}],
     )
     tokens = _BoomTokens()
     events = [
-        e async for e in stream_answer(plan, tokens, provider=_OkProvider(), ttft_ms=1)
+        e
+        async for e in stream_answer(
+            plan, tokens, provider=_OkProvider(), ttft_ms=1, failover=False
+        )
     ]
     names = [e["event"] for e in events]
 

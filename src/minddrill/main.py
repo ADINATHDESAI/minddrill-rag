@@ -14,6 +14,7 @@ from minddrill.auth.router import router as auth_router
 from minddrill.config import get_settings
 from minddrill.logging import RequestIDMiddleware, configure_logging
 from minddrill.models.user import User
+from minddrill.observability import get_langfuse
 from minddrill.rag.reranker import warm_reranker
 from minddrill.rag.router import router as rag_router
 from minddrill.sessions.router import router as sessions_router
@@ -37,6 +38,9 @@ async def _lifespan(app: FastAPI):
     # model-load latency. Off the loop — construction is blocking.
     await asyncio.to_thread(warm_reranker)
     yield
+    # Traces are batched client-side; flush so the last requests' traces are
+    # sent rather than dropped on process exit.
+    get_langfuse().flush()
 
 
 def create_app() -> FastAPI:

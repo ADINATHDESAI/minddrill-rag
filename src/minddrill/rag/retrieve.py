@@ -14,12 +14,14 @@ from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 
 import structlog
+from langfuse import propagate_attributes
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from minddrill.config import get_settings
 from minddrill.models.chunk import Chunk
+from minddrill.observability import get_langfuse, trace_id_for
 from minddrill.providers.base import LLMProvider
 from minddrill.providers.failover import ProvidersUnavailable, open_stream
 from minddrill.rag import events
@@ -145,6 +147,7 @@ class AnswerPlan:
 
     start: float
     user_id: uuid.UUID
+    request_id: str
     decline_reason: str | None = None
     sources: list[dict] | None = None
     messages: list[dict] | None = None
@@ -156,23 +159,57 @@ async def prepare_answer(
     question: str,
     embedder: Embedder,
     reranker: Reranker,
+    request_id: str,
 ) -> AnswerPlan:
-    """Embed → retrieve (scoped) → rerank → grounding gate. No provider call yet."""
+    """Embed → retrieve (scoped) → rerank → grounding gate. No provider call yet.
+
+    `retrieve` and `rerank` are each their own Langfuse span, both tagged with
+    the trace id derived from `request_id` (see `observability.trace_id_for`)
+    so they land in the same trace as the `generate` span opened later in
+    `stream_answer`, without needing a single object to stay open across both.
+    """
     start = time.perf_counter()
+    lf = get_langfuse()
+    trace_id = trace_id_for(request_id)
     query_vec = await embedder.embed_query(question)
-    candidates = await Retriever(session).hybrid_search(
-        question, query_vec, user_id, _CANDIDATE_K
-    )
+
+    with propagate_attributes(
+        user_id=str(user_id), metadata={"request_id": request_id}, trace_name="query"
+    ):
+        with lf.start_as_current_observation(
+            trace_context={"trace_id": trace_id},
+            name="retrieve",
+            as_type="retriever",
+            input=question,
+        ) as retrieve_span:
+            candidates = await Retriever(session).hybrid_search(
+                question, query_vec, user_id, _CANDIDATE_K
+            )
+            retrieve_span.update(output={"chunk_count": len(candidates)})
+
     if not candidates:
         log.info("query.no_context", user_id=str(user_id))
         return AnswerPlan(
-            start=start, user_id=user_id, decline_reason=_NO_CONTEXT_REASON
+            start=start,
+            user_id=user_id,
+            request_id=request_id,
+            decline_reason=_NO_CONTEXT_REASON,
         )
 
     # The reranker only reorders chunks already scoped to this user by both
     # retrieval arms, so it opens no new isolation surface.
     settings = get_settings()
-    scored = await reranker.rerank(question, candidates, settings.rerank_top_n)
+    with propagate_attributes(
+        user_id=str(user_id), metadata={"request_id": request_id}, trace_name="query"
+    ):
+        with lf.start_as_current_observation(
+            trace_context={"trace_id": trace_id},
+            name="rerank",
+            as_type="span",
+            input={"candidate_count": len(candidates), "top_n": settings.rerank_top_n},
+        ) as rerank_span:
+            scored = await reranker.rerank(question, candidates, settings.rerank_top_n)
+            rerank_span.update(output={"scores": [score for _, score in scored]})
 
     # Grounding gate: only meaningful with a real relevance score, so it is
     # skipped when reranking is disabled (the passthrough reports 0.0).
@@ -182,7 +219,10 @@ async def prepare_answer(
         top = scored[0][1] if scored else None
         log.info("query.declined", user_id=str(user_id), top_score=top)
         return AnswerPlan(
-            start=start, user_id=user_id, decline_reason=_WEAK_CONTEXT_REASON
+            start=start,
+            user_id=user_id,
+            request_id=request_id,
+            decline_reason=_WEAK_CONTEXT_REASON,
         )
 
     chunks = [c for c, _ in scored]
@@ -198,6 +238,7 @@ async def prepare_answer(
     return AnswerPlan(
         start=start,
         user_id=user_id,
+        request_id=request_id,
         sources=sources,
         messages=_build_messages(question, chunks),
     )
@@ -208,6 +249,8 @@ async def stream_answer(
     tokens: AsyncIterator[str],
     provider: LLMProvider,
     ttft_ms: int,
+    *,
+    failover: bool,
 ) -> AsyncIterator[dict]:
     """Emit the SSE events for a committed answer: sources → tokens → done.
 
@@ -217,36 +260,71 @@ async def stream_answer(
     `yield`; the `finally` then closes the provider stream to end token spend.
     Doing it that way avoids a second consumer of the ASGI `receive` channel,
     which sse-starlette already owns for disconnect detection.
-    """
-    yield events.sources(plan.sources)
-    yield events.status("generating")
-    text_parts: list[str] = []
-    try:
-        async for tok in tokens:
-            text_parts.append(tok)
-            yield events.token(tok)
-    except Exception as exc:  # failure after the stream opened
-        log.warning("query.stream_error", user_id=str(plan.user_id), error=str(exc))
-        yield events.error("internal_error", "generation failed mid-stream")
-        return
-    finally:
-        # Runs on normal completion, mid-stream error, and cancellation
-        # (disconnect) alike — always releases the upstream provider stream.
-        await tokens.aclose()
 
-    latency_ms = int((time.perf_counter() - plan.start) * 1000)
-    usage = getattr(provider, "last_usage", None) or {
-        "input_tokens": 0,
-        "output_tokens": 0,
-    }
-    log.info(
-        "query.answered",
-        user_id=str(plan.user_id),
-        source_count=len(plan.sources),
-        ttft_ms=ttft_ms,
-        latency_ms=latency_ms,
-    )
-    yield events.done(usage, ttft_ms, latency_ms, grounded=True)
+    This generator is itself the thing ASGI drives, so wrapping its body in a
+    Langfuse `generate` span keeps the span open for exactly its lifetime —
+    including across suspended `yield`s — with no manual enter/exit needed.
+    Token yields never wait on Langfuse: usage/output are only attached once,
+    after the token loop ends (success, error, or disconnect), never per token.
+    """
+    lf = get_langfuse()
+    trace_id = trace_id_for(plan.request_id)
+    model = getattr(provider, "_model", None) or type(provider).__name__
+    with (
+        propagate_attributes(
+            user_id=str(plan.user_id),
+            metadata={"request_id": plan.request_id},
+            trace_name="query",
+        ),
+        lf.start_as_current_observation(
+            trace_context={"trace_id": trace_id},
+            name="generate",
+            as_type="generation",
+            input=plan.messages,
+            model=model,
+        ) as generate_span,
+    ):
+        yield events.sources(plan.sources)
+        yield events.status("generating")
+        text_parts: list[str] = []
+        try:
+            async for tok in tokens:
+                text_parts.append(tok)
+                yield events.token(tok)
+        except Exception as exc:  # failure after the stream opened
+            log.warning("query.stream_error", user_id=str(plan.user_id), error=str(exc))
+            generate_span.update(level="ERROR", status_message=str(exc))
+            yield events.error("internal_error", "generation failed mid-stream")
+            return
+        finally:
+            # Runs on normal completion, mid-stream error, and cancellation
+            # (disconnect) alike — always releases the upstream provider stream.
+            await tokens.aclose()
+
+        latency_ms = int((time.perf_counter() - plan.start) * 1000)
+        usage = getattr(provider, "last_usage", None) or {
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+        generate_span.update(
+            output="".join(text_parts),
+            usage_details=usage,
+            metadata={
+                "provider": type(provider).__name__,
+                "failover": failover,
+                "ttft_ms": ttft_ms,
+                "latency_ms": latency_ms,
+                "grounded": True,
+            },
+        )
+        log.info(
+            "query.answered",
+            user_id=str(plan.user_id),
+            source_count=len(plan.sources),
+            ttft_ms=ttft_ms,
+            latency_ms=latency_ms,
+        )
+        yield events.done(usage, ttft_ms, latency_ms, grounded=True)
 
 
 async def decline_stream(reason: str) -> AsyncIterator[dict]:
@@ -260,20 +338,27 @@ async def run_query(
     embedder: Embedder,
     providers: Sequence[LLMProvider],
     reranker: Reranker,
+    request_id: str,
 ) -> AsyncIterator[dict]:
     """Full query path as an SSE event generator, with failover resolved first.
 
     Provider failover is resolved *before* this generator yields its first event,
     so an all-providers-down failure surfaces as `ProvidersUnavailable` (→ 503)
-    rather than a broken half-open stream.
+    rather than a broken half-open stream. `request_id` is the same id the
+    logging middleware bound to this request; it seeds the Langfuse trace id
+    (see `observability.trace_id_for`) so a log line and a trace point to the
+    same request.
     """
-    plan = await prepare_answer(session, user_id, question, embedder, reranker)
+    plan = await prepare_answer(
+        session, user_id, question, embedder, reranker, request_id
+    )
     if plan.decline_reason is not None:
         return decline_stream(plan.decline_reason)
 
     tokens, provider = await open_stream(providers, plan.messages)
     ttft_ms = int((time.perf_counter() - plan.start) * 1000)
-    return stream_answer(plan, tokens, provider, ttft_ms)
+    failover = bool(providers) and provider is not providers[0]
+    return stream_answer(plan, tokens, provider, ttft_ms, failover=failover)
 
 
 __all__ = [

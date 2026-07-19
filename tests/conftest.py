@@ -53,6 +53,11 @@ os.environ["DATABASE_URL"] = _resolve_test_database_url()
 # Tests don't depend on the dev secret's strength (or even its presence) — pin a
 # fixed, sufficiently long one so HS256 signing never warns about a weak key.
 os.environ["JWT_SECRET"] = "test-only-jwt-signing-secret-not-for-production-0123456789"
+# Tracing is exercised against a recording fake (see `FakeLangfuse` below), never
+# the real client — blank the keys so nothing here can ever reach real Langfuse,
+# regardless of what's configured in the developer's own .env.
+os.environ["LANGFUSE_PUBLIC_KEY"] = ""
+os.environ["LANGFUSE_SECRET_KEY"] = ""
 get_settings.cache_clear()
 
 import httpx  # noqa: E402
@@ -177,6 +182,101 @@ class FakeReranker:
         self.calls.append(len(chunks))
         top = chunks[: min(top_n, len(chunks))]
         return [(c, self.score) for c in top]
+
+
+class FakeSpan:
+    """Records what production code reported on one observation."""
+
+    def __init__(
+        self, name: str, as_type: str, trace_id: str | None, input=None, model=None
+    ) -> None:
+        self.name = name
+        self.as_type = as_type
+        self.trace_id = trace_id
+        self.input = input
+        self.model = model
+        self.output = None
+        self.metadata: dict = {}
+        self.usage_details: dict | None = None
+        self.level: str | None = None
+        self.status_message: str | None = None
+        self.ended = False
+
+    def update(
+        self,
+        *,
+        output=None,
+        metadata=None,
+        usage_details=None,
+        level=None,
+        status_message=None,
+        **_kwargs,
+    ) -> "FakeSpan":
+        if output is not None:
+            self.output = output
+        if metadata:
+            self.metadata.update(metadata)
+        if usage_details is not None:
+            self.usage_details = usage_details
+        if level is not None:
+            self.level = level
+        if status_message is not None:
+            self.status_message = status_message
+        return self
+
+
+class _FakeSpanContext:
+    def __init__(self, span: FakeSpan) -> None:
+        self.span = span
+
+    def __enter__(self) -> FakeSpan:
+        return self.span
+
+    def __exit__(self, *exc_info) -> bool:
+        self.span.ended = True
+        return False
+
+
+class FakeLangfuse:
+    """Records every span opened via `start_as_current_observation`.
+
+    Mirrors the one method our code calls (always as `with ... as span:`), so
+    tests can assert on trace id, span names/types, nesting order, and what got
+    attached to each span without touching the real Langfuse client/network.
+    """
+
+    def __init__(self) -> None:
+        self.spans: list[FakeSpan] = []
+
+    def start_as_current_observation(
+        self,
+        *,
+        trace_context=None,
+        name: str,
+        as_type: str = "span",
+        input=None,
+        model=None,
+        **_kwargs,
+    ) -> _FakeSpanContext:
+        trace_id = trace_context["trace_id"] if trace_context else None
+        span = FakeSpan(name, as_type, trace_id, input=input, model=model)
+        self.spans.append(span)
+        return _FakeSpanContext(span)
+
+    def flush(self) -> None:
+        pass
+
+
+@pytest.fixture
+def langfuse_fake(monkeypatch) -> FakeLangfuse:
+    """Swap the Langfuse client seam for a recording fake in both hot paths."""
+    from minddrill.agent import loop as agent_loop
+    from minddrill.rag import retrieve as rag_retrieve
+
+    fake = FakeLangfuse()
+    monkeypatch.setattr(rag_retrieve, "get_langfuse", lambda: fake)
+    monkeypatch.setattr(agent_loop, "get_langfuse", lambda: fake)
+    return fake
 
 
 class FakeToolModel(FakeMessagesListChatModel):

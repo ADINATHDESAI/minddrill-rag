@@ -25,6 +25,8 @@ from langchain.agents.middleware import (
 )
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langfuse import propagate_attributes
+from langfuse.langchain import CallbackHandler
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +35,7 @@ from minddrill.config import get_settings
 from minddrill.db.session import SessionLocal
 from minddrill.models.message import Message
 from minddrill.models.session import ChatSession
+from minddrill.observability import get_langfuse, trace_id_for
 from minddrill.rag import events
 from minddrill.rag.embedder import Embedder
 from minddrill.rag.reranker import Reranker
@@ -66,6 +69,7 @@ async def run_agent_chat(
     fallback_model: BaseChatModel | None,
     embedder: Embedder,
     reranker: Reranker,
+    request_id: str,
 ) -> AsyncIterator[dict]:
     """Persist the user turn, build the agent, return its SSE event stream."""
     start = time.perf_counter()
@@ -102,98 +106,152 @@ async def run_agent_chat(
         system_prompt=_AGENT_SYSTEM_PROMPT,
         middleware=middleware,
     )
-    return _stream_agent(chat_session.id, start, agent, input_messages, sources_sink)
+    return _stream_agent(
+        chat_session.id,
+        chat_session.user_id,
+        start,
+        agent,
+        input_messages,
+        sources_sink,
+        request_id,
+    )
 
 
 async def _stream_agent(
     session_id: uuid.UUID,
+    user_id: uuid.UUID,
     start: float,
     agent: Any,
     input_messages: list[dict],
     sources_sink: list[dict],
+    request_id: str,
 ) -> AsyncIterator[dict]:
+    """Drive the agent loop inside one Langfuse trace, keyed to `request_id`.
+
+    The `CallbackHandler` traces each model/tool step automatically (model
+    name, tokens, observation types) — no manual generation spans needed here.
+    This function is itself the generator ASGI drives, so the trace span below
+    stays open for exactly its lifetime, including across suspended `yield`s,
+    and closes via the `with` on completion, error, or client disconnect alike.
+    """
+    lf = get_langfuse()
+    trace_id = trace_id_for(request_id)
+    handler = CallbackHandler()
+
     yield events.status("generating")
     parts: list[str] = []
     ttft_ms: int | None = None
     usage: dict[str, int] | None = None
     grounded = False
 
-    stream = agent.astream(
-        {"messages": input_messages}, stream_mode=["updates", "messages"]
-    )
-    try:
-        async for mode, data in stream:
-            if mode == "messages":
-                msg, _meta = data
-                if not isinstance(msg, (AIMessage, AIMessageChunk)):
-                    continue
-                text = _content_text(msg.content)
-                if text:
-                    if ttft_ms is None:
-                        ttft_ms = int((time.perf_counter() - start) * 1000)
-                    parts.append(text)
-                    yield events.token(text)
-                meta = getattr(msg, "usage_metadata", None)
-                if meta:
-                    usage = usage or {"input_tokens": 0, "output_tokens": 0}
-                    usage["input_tokens"] += meta.get("input_tokens", 0)
-                    usage["output_tokens"] += meta.get("output_tokens", 0)
-            else:  # "updates": node outputs carry tool calls and tool returns
-                for update in (data or {}).values():
-                    if not isinstance(update, dict):
-                        continue
-                    for m in update.get("messages", []):
-                        if isinstance(m, AIMessage) and m.tool_calls:
-                            for call in m.tool_calls:
-                                yield events.tool_call(
-                                    call["name"], call.get("args", {})
-                                )
-                        elif isinstance(m, ToolMessage):
-                            yield events.tool_result(m.name, _content_text(m.content))
-                            # A KB hit filled the sink: emit the sources its
-                            # citation markers point at, then reset for any
-                            # later search in the same run.
-                            if sources_sink:
-                                grounded = True
-                                yield events.sources(list(sources_sink))
-                                sources_sink.clear()
-    except Exception as exc:  # failure after the stream opened
-        log.warning("agent.stream_error", session_id=str(session_id), error=str(exc))
-        yield events.error("internal_error", "generation failed mid-stream")
-        return
-    finally:
-        await stream.aclose()
-
-    text = "".join(parts)
-    if text:
+    with (
+        propagate_attributes(
+            user_id=str(user_id),
+            session_id=str(session_id),
+            metadata={"request_id": request_id},
+            trace_name="chat",
+        ),
+        lf.start_as_current_observation(
+            trace_context={"trace_id": trace_id},
+            name="chat",
+            as_type="span",
+            input=input_messages[-1]["content"] if input_messages else "",
+        ) as chat_span,
+    ):
+        stream = agent.astream(
+            {"messages": input_messages},
+            stream_mode=["updates", "messages"],
+            config={"callbacks": [handler]},
+        )
         try:
-            async with SessionLocal() as write:
-                write.add(
-                    Message(
-                        session_id=session_id,
-                        role="assistant",
-                        content=text,
-                        token_count=estimate_tokens(text),
-                    )
-                )
-                await write.commit()
-        except Exception as exc:
+            async for mode, data in stream:
+                if mode == "messages":
+                    msg, _meta = data
+                    if not isinstance(msg, (AIMessage, AIMessageChunk)):
+                        continue
+                    text = _content_text(msg.content)
+                    if text:
+                        if ttft_ms is None:
+                            ttft_ms = int((time.perf_counter() - start) * 1000)
+                        parts.append(text)
+                        yield events.token(text)
+                    meta = getattr(msg, "usage_metadata", None)
+                    if meta:
+                        usage = usage or {"input_tokens": 0, "output_tokens": 0}
+                        usage["input_tokens"] += meta.get("input_tokens", 0)
+                        usage["output_tokens"] += meta.get("output_tokens", 0)
+                else:  # "updates": node outputs carry tool calls and tool returns
+                    for update in (data or {}).values():
+                        if not isinstance(update, dict):
+                            continue
+                        for m in update.get("messages", []):
+                            if isinstance(m, AIMessage) and m.tool_calls:
+                                for call in m.tool_calls:
+                                    yield events.tool_call(
+                                        call["name"], call.get("args", {})
+                                    )
+                            elif isinstance(m, ToolMessage):
+                                yield events.tool_result(
+                                    m.name, _content_text(m.content)
+                                )
+                                # A KB hit filled the sink: emit the sources its
+                                # citation markers point at, then reset for any
+                                # later search in the same run.
+                                if sources_sink:
+                                    grounded = True
+                                    yield events.sources(list(sources_sink))
+                                    sources_sink.clear()
+        except Exception as exc:  # failure after the stream opened
             log.warning(
-                "agent.persist_error", session_id=str(session_id), error=str(exc)
+                "agent.stream_error", session_id=str(session_id), error=str(exc)
             )
-            yield events.error("internal_error", "failed to persist reply")
+            chat_span.update(level="ERROR", status_message=str(exc))
+            yield events.error("internal_error", "generation failed mid-stream")
             return
+        finally:
+            await stream.aclose()
 
-    latency_ms = int((time.perf_counter() - start) * 1000)
-    log.info(
-        "agent.answered",
-        session_id=str(session_id),
-        ttft_ms=ttft_ms or 0,
-        latency_ms=latency_ms,
-    )
-    yield events.done(
-        usage or {"input_tokens": 0, "output_tokens": 0},
-        ttft_ms or 0,
-        latency_ms,
-        grounded=grounded,
-    )
+        text = "".join(parts)
+        if text:
+            try:
+                async with SessionLocal() as write:
+                    write.add(
+                        Message(
+                            session_id=session_id,
+                            role="assistant",
+                            content=text,
+                            token_count=estimate_tokens(text),
+                        )
+                    )
+                    await write.commit()
+            except Exception as exc:
+                log.warning(
+                    "agent.persist_error", session_id=str(session_id), error=str(exc)
+                )
+                chat_span.update(level="ERROR", status_message=str(exc))
+                yield events.error("internal_error", "failed to persist reply")
+                return
+
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        done_usage = usage or {"input_tokens": 0, "output_tokens": 0}
+        chat_span.update(
+            output=text,
+            metadata={
+                "ttft_ms": ttft_ms or 0,
+                "latency_ms": latency_ms,
+                "grounded": grounded,
+                "usage": done_usage,
+            },
+        )
+        log.info(
+            "agent.answered",
+            session_id=str(session_id),
+            ttft_ms=ttft_ms or 0,
+            latency_ms=latency_ms,
+        )
+        yield events.done(
+            done_usage,
+            ttft_ms or 0,
+            latency_ms,
+            grounded=grounded,
+        )

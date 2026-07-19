@@ -8,7 +8,7 @@ indistinguishable from a missing one (404).
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -95,6 +95,7 @@ async def get_messages(
 @router.post("/chat")
 async def chat(
     body: ChatRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     model: BaseChatModel = Depends(get_agent_model),
@@ -111,5 +112,6 @@ async def chat(
         fallback_model=fallback_model,
         embedder=embedder,
         reranker=reranker,
+        request_id=request.state.request_id,
     )
     return EventSourceResponse(generator, headers=_SSE_HEADERS)

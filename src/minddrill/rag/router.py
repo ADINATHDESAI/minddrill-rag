@@ -7,7 +7,7 @@ hand-written and is never queued.
 import asyncio
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
@@ -95,6 +95,7 @@ async def ingest_status(
 @router.post("/query")
 async def query(
     body: QueryRequest,
+    request: Request,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     embedder: Embedder = Depends(get_embedder),
@@ -112,6 +113,7 @@ async def query(
             embedder,
             providers,
             reranker,
+            request.state.request_id,
         )
     except ProvidersUnavailable:
         raise HTTPException(

@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # Ceiling on the agent's model calls per request. On the limit the loop ends
     # and returns the best answer so far instead of spinning tools forever.
     agent_max_steps: int = 6
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = ""
+
+    @property
+    def langfuse_enabled(self) -> bool:
+        """Tracing needs both keys; a bare base_url alone can't authenticate."""
+        return bool(self.langfuse_public_key and self.langfuse_secret_key)
 
 
 @lru_cache
