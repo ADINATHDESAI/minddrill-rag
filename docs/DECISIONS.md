@@ -118,6 +118,10 @@ Why: a build that fails on a quality regression is a strong maturity signal.
 
 **Langfuse Cloud free tier, not self-hosted** (revises the earlier "self-hosted Langfuse" decision above). Why: Langfuse v3 self-host now needs ~6 containers and 8GB RAM — too heavy for a cheap server and a limited number of users. Cost: bound by the free-tier monthly event limit; instrumentation is identical, so the self-host path stays open.
 
+**PR gate runs a fixed 8-question smoke subset, not the full 42-item golden set; no nightly full run.** Why: Gemini's free tier caps `gemini-2.5-flash` generation at 20 requests/day — a full-set judge run doesn't fit in a single day's quota, let alone one per PR. Cost: the full golden set (`eval/run_eval.py`, no `--smoke`) is a manual/local check, not an automated regression gate.
+
+**Eval results write to a JSON+Markdown artifact, not the `eval_runs`/`eval_results` tables in docs/04.** Why: nothing consumes those tables yet (YAGNI) — the CI artifact already gives per-run visibility. Deferred, not abandoned; the schema stays documented in docs/04 for whenever a consumer appears.
+
 ## Ops
 
 **Docker Compose:** API, worker, ParadeDB Postgres, Redis, Langfuse. Cheap self-host.

@@ -1,0 +1,94 @@
+name: Eval gate
+
+# Offline, server-independent quality gate (FR9, docs/02 section 11). Runs the
+# smoke subset of the golden set on every PR: enough to catch a real quality
+# regression without burning the free Gemini judge quota on every push. Run
+# `python eval/run_eval.py` (no --smoke) locally against the full golden set
+# before a release-worthy change.
+on:
+  pull_request:
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: paradedb/paradedb:latest
+        env:
+          POSTGRES_USER: minddrill
+          POSTGRES_PASSWORD: minddrill
+          POSTGRES_DB: minddrill
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U minddrill -d minddrill"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://minddrill:minddrill@localhost:5432/minddrill
+      REDIS_URL: redis://localhost:6379/0
+      JWT_SECRET: ci-only-jwt-secret-not-for-production-0123456789
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Cache reranker/embedding model downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: ${{ runner.os }}-hf-${{ hashFiles('uv.lock') }}
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Create the eval database
+        # eval/run_eval.py derives and bootstraps <db>_test itself (extensions,
+        # tables, BM25 index) from an existing connection — but Postgres has no
+        # way to create *that database* from within a session on another one,
+        # so the empty database has to exist first.
+        run: |
+          uv run python -c "
+          import asyncio
+          import asyncpg
+
+          async def main():
+              conn = await asyncpg.connect(
+                  user='minddrill', password='minddrill',
+                  host='localhost', port=5432, database='minddrill',
+              )
+              exists = await conn.fetchval(
+                  \"SELECT 1 FROM pg_database WHERE datname = 'minddrill_test'\"
+              )
+              if not exists:
+                  await conn.execute('CREATE DATABASE minddrill_test')
+              await conn.close()
+
+          asyncio.run(main())
+          "
+
+      - name: Run the offline eval gate
+        # --no-rerank-compare: the rerank on/off comparison is a portfolio
+        # artifact for local/manual runs, not part of the PR gate — running it
+        # here would double the Gemini judge calls on every push.
+        run: uv run python eval/run_eval.py --smoke --no-rerank-compare
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval/results/
+          if-no-files-found: ignore

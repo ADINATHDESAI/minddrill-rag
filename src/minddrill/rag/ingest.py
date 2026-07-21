@@ -1,6 +1,7 @@
-"""Synchronous PDF ingestion: load → split → embed → store.
+"""Synchronous ingestion: load → split → embed → store.
 
-`source_uri` is a local filesystem path. Idempotency is per-user on
+`source_uri` is a local filesystem path; the loader is picked by
+`req.source_type` (`pdf` or `markdown`). Idempotency is per-user on
 `(user_id, content_hash)`.
 """
 
@@ -9,7 +10,7 @@ import hashlib
 import uuid
 
 import structlog
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -34,10 +35,18 @@ _CHUNK_CHARS = 600 * _CHARS_PER_TOKEN
 _OVERLAP_CHARS = 100 * _CHARS_PER_TOKEN
 
 
-def _hash_and_split(source_uri: str) -> tuple[str, list]:
+_LOADERS = {
+    "pdf": PyPDFLoader,
+    "markdown": TextLoader,
+}
+
+
+def _hash_and_split(source_uri: str, source_type: str) -> tuple[str, list]:
+    if source_type not in _LOADERS:
+        raise ValueError(f"unsupported source_type: {source_type!r}")
     with open(source_uri, "rb") as f:
         content_hash = hashlib.sha256(f.read()).hexdigest()
-    pages = PyPDFLoader(source_uri).load()
+    pages = _LOADERS[source_type](source_uri).load()
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=_CHUNK_CHARS, chunk_overlap=_OVERLAP_CHARS
     )
@@ -66,7 +75,9 @@ async def ingest_pdf(
     req: IngestRequest,
     embedder: Embedder,
 ) -> IngestResponse:
-    content_hash, splits = await asyncio.to_thread(_hash_and_split, req.source_uri)
+    content_hash, splits = await asyncio.to_thread(
+        _hash_and_split, req.source_uri, req.source_type
+    )
 
     duplicate = await _existing_document(session, user_id, content_hash)
     if duplicate is not None:

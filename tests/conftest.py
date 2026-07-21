@@ -15,41 +15,13 @@ ordering is predictable.
 import asyncio
 import os
 import re
-from urllib.parse import urlsplit, urlunsplit
 
 from minddrill.config import get_settings
-
-
-def _resolve_test_database_url() -> str:
-    """Derive the test DB URL from DATABASE_URL by suffixing the db name with `_test`.
-
-    Never used verbatim: this exists so tests can't be pointed at a real database
-    by accident. Aborts loudly if the resolved name doesn't end in `_test`.
-    """
-    base_url = get_settings().database_url
-    parts = urlsplit(base_url)
-    db_name = parts.path.lstrip("/")
-    if not db_name:
-        raise RuntimeError(
-            f"DATABASE_URL has no database name to derive a test database from: {base_url!r}"
-        )
-    test_name = f"{db_name}_test"
-    test_url = urlunsplit(
-        (parts.scheme, parts.netloc, f"/{test_name}", parts.query, parts.fragment)
-    )
-
-    resolved_name = urlsplit(test_url).path.lstrip("/")
-    if not resolved_name.endswith("_test"):
-        raise RuntimeError(
-            f"Refusing to run tests: resolved database name {resolved_name!r} "
-            "does not end in '_test'. Tests must never run against a non-test database."
-        )
-    return test_url
-
+from minddrill.db.testing import resolve_test_database_url
 
 # Must happen before any import that creates the DB engine (minddrill.db.session,
 # minddrill.main, ...), so the whole app wires up against the test database.
-os.environ["DATABASE_URL"] = _resolve_test_database_url()
+os.environ["DATABASE_URL"] = resolve_test_database_url()
 # Tests don't depend on the dev secret's strength (or even its presence) — pin a
 # fixed, sufficiently long one so HS256 signing never warns about a weak key.
 os.environ["JWT_SECRET"] = "test-only-jwt-signing-secret-not-for-production-0123456789"
@@ -64,14 +36,9 @@ import httpx  # noqa: E402
 import pytest  # noqa: E402
 from sqlalchemy import text  # noqa: E402
 
-from minddrill.db.session import Base, SessionLocal, engine  # noqa: E402
+from minddrill.db.session import SessionLocal, engine  # noqa: E402
+from minddrill.db.testing import init_test_schema  # noqa: E402
 from minddrill.main import app  # noqa: E402
-from minddrill.models import chunk as _chunk  # noqa: E402,F401  registers Chunk on Base.metadata
-from minddrill.models import document as _document  # noqa: E402,F401  registers Document
-from minddrill.models import ingestion_job as _ingestion_job  # noqa: E402,F401  registers IngestionJob
-from minddrill.models import message as _message  # noqa: E402,F401  registers Message
-from minddrill.models import session as _session_model  # noqa: E402,F401  registers ChatSession
-from minddrill.models import user as _user  # noqa: E402,F401  registers User on Base.metadata
 from langchain_core.language_models.fake_chat_models import (  # noqa: E402
     FakeMessagesListChatModel,
 )
@@ -84,26 +51,9 @@ from minddrill.rag.reranker import get_reranker  # noqa: E402
 from minddrill.worker import tasks as _tasks  # noqa: E402
 from minddrill.worker.celery_app import celery_app  # noqa: E402
 
-
-async def _init_test_schema() -> None:
-    async with engine.begin() as conn:
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_search"))
-        await conn.run_sync(Base.metadata.create_all)
-        # The BM25 index is a `USING bm25` index create_all can't emit; mirror
-        # the 0004 migration here so the keyword arm's @@@ query works in tests.
-        await conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS chunks_bm25 ON chunks "
-                "USING bm25 (id, content, user_id) WITH (key_field='id')"
-            )
-        )
-    # Runs in its own event loop, separate from the one pytest-asyncio uses for
-    # tests; dispose the pool so no connection is reused across loops.
-    await engine.dispose()
-
-
-asyncio.run(_init_test_schema())
+# Runs in its own event loop, separate from the one pytest-asyncio uses for
+# tests; init_test_schema disposes the pool so no connection leaks across loops.
+asyncio.run(init_test_schema())
 
 
 @pytest.fixture(autouse=True)
