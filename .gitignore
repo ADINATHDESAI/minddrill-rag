@@ -225,3 +225,6 @@ __pycache__/
 
 # Local-Files
 Local-Files/
+
+# Generated eval run reports
+eval/results/

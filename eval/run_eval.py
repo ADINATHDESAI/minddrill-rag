@@ -39,6 +39,7 @@ from eval.config import (  # noqa: E402
     GOLDEN_PATH,
     JUDGE_CHAT_MODEL,
     JUDGE_EMBED_MODEL,
+    REQUEST_DELAY_SECONDS,
     SMOKE_QUESTIONS,
 )
 
@@ -135,7 +136,13 @@ async def ingest_golden(
 
 
 async def build_samples(
-    session, user_id: uuid.UUID, items: list[GoldenItem], embedder, providers, reranker
+    session,
+    user_id: uuid.UUID,
+    items: list[GoldenItem],
+    embedder,
+    providers,
+    reranker,
+    request_delay: float = REQUEST_DELAY_SECONDS,
 ) -> list[EvalSample]:
     """Drive the real pipeline (retrieve + rerank + generate) per question."""
     from minddrill.models.chunk import Chunk
@@ -162,6 +169,11 @@ async def build_samples(
             )
             continue
 
+        # `prepare_answer` guarantees sources/messages are set whenever
+        # decline_reason is None; assert narrows this for the type checker.
+        assert plan.sources is not None
+        assert plan.messages is not None
+
         chunk_ids = [uuid.UUID(s["chunk_id"]) for s in plan.sources]
         rows = await session.scalars(select(Chunk).where(Chunk.id.in_(chunk_ids)))
         by_id = {c.id: c.content for c in rows}
@@ -171,7 +183,15 @@ async def build_samples(
 
         tokens, _provider = await open_stream(providers, plan.messages)
         answer_parts = [tok async for tok in tokens]
-        await tokens.aclose()
+        aclose = getattr(tokens, "aclose", None)
+        if aclose is not None:
+            await aclose()
+
+        # Space out generate calls to stay under the free-tier per-minute cap.
+        # Skipped after the last item, and callers (e.g. tests, against a fake
+        # in-memory provider) can pass request_delay=0 to skip it entirely.
+        if request_delay and i < len(items) - 1:
+            await asyncio.sleep(request_delay)
 
         samples.append(
             EvalSample(
@@ -212,8 +232,11 @@ def score_samples(samples: list[EvalSample]) -> dict[str, float]:
         )
     )
     judge_embeddings = LangchainEmbeddingsWrapper(
+        # google_api_key is a real pydantic field (confirmed via model_fields);
+        # Pylance's bundled stub for this class just doesn't declare it.
         GoogleGenerativeAIEmbeddings(
-            model=JUDGE_EMBED_MODEL, google_api_key=settings_key
+            model=JUDGE_EMBED_MODEL,
+            google_api_key=settings_key,  # pyright: ignore[reportCallIssue]
         )
     )
 

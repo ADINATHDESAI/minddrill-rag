@@ -27,7 +27,9 @@ class Settings(BaseSettings):
     jwt_secret: str
     gemini_api_key: str = ""
     openrouter_api_key: str = ""
-    openrouter_model: str = "meta-llama/llama-3.3-70b-instruct:free"
+    # OpenRouter periodically retires free-tier model slugs; re-check
+    # https://openrouter.ai/models?max_price=0 if this starts 404ing.
+    openrouter_model: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
     embed_dim: int = 768
     log_level: str = "INFO"
     rerank_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"

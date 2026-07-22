@@ -81,9 +81,13 @@ class Retriever:
         params = {"user_id": user_id, "query": query, "k": k}
         # The `user_id` predicate guarantees isolation even if ParadeDB
         # post-filters rather than pushing the filter into the BM25 index.
+        # Match disjunction (`|||`) tokenizes `query` and matches it as plain
+        # terms; unlike `@@@`, it never runs the text through tantivy's
+        # query-string parser, so user text containing parser-reserved
+        # characters (e.g. the unbalanced "(" in "401(k)") can't break it.
         pg_search = text(
             "SELECT id FROM chunks "
-            "WHERE user_id = :user_id AND content @@@ :query "
+            "WHERE user_id = :user_id AND content ||| :query "
             "ORDER BY paradedb.score(id) DESC LIMIT :k"
         )
         try:
@@ -92,8 +96,13 @@ class Retriever:
             ):  # savepoint: keep session usable on fallback
                 rows = await self._session.execute(pg_search, params)
                 return [row[0] for row in rows]
-        except DBAPIError:
-            log.warning("bm25.pg_search_unavailable", user_id=str(user_id))
+        except DBAPIError as exc:
+            # A fallback that fails silently hides real regressions (e.g. the
+            # extension missing, a malformed query) behind a quieter, weaker
+            # ranking arm — log the actual cause, not just that it happened.
+            log.warning(
+                "bm25.pg_search_unavailable", user_id=str(user_id), error=str(exc)
+            )
             return await self._ts_rank_fallback(params)
 
     async def _ts_rank_fallback(self, params: dict) -> list[uuid.UUID]:

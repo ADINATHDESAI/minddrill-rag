@@ -119,7 +119,9 @@ async def test_build_samples_on_tiny_fixture_set(
         ),
     ]
 
-    samples = await build_samples(db_session, user_id, items, embedder, [llm], reranker)
+    samples = await build_samples(
+        db_session, user_id, items, embedder, [llm], reranker, request_delay=0
+    )
 
     assert len(samples) == 2
     for sample, item in zip(samples, items):
@@ -146,7 +148,7 @@ async def test_build_samples_declines_when_retrieval_finds_nothing(
     ]
 
     samples = await build_samples(
-        db_session, isolated_user, items, embedder, [llm], reranker
+        db_session, isolated_user, items, embedder, [llm], reranker, request_delay=0
     )
 
     assert len(samples) == 1

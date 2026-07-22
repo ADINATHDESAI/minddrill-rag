@@ -28,3 +28,11 @@ SMOKE_QUESTIONS = frozenset(
 
 JUDGE_CHAT_MODEL = "gemini-2.5-flash"
 JUDGE_EMBED_MODEL = "models/gemini-embedding-001"
+
+# Free-tier gemini-2.5-flash is commonly capped around 10 RPM (per-project,
+# viewable in the AI Studio console — Google no longer publishes a fixed
+# table). 6.5s spaces requests to ~9/min, leaving headroom. This only guards
+# against per-minute 429s; a per-day cap (we've seen as low as 20 req/day on
+# a fresh key) isn't fixable by spacing — only by waiting for the daily reset
+# or judging with a different provider.
+REQUEST_DELAY_SECONDS = float(os.environ.get("EVAL_REQUEST_DELAY_SECONDS", "6.5"))
